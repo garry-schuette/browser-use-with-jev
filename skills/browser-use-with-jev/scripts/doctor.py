@@ -13,6 +13,7 @@ def inspect_installation():
         "virtualenv": python.is_file(),
         "example": (root / "examples" / "basic.py").is_file(),
         "host_callback": (root / "src/browser_use_with_jev/host.py").is_file(),
+        "conversation_bridge": (root / "src/browser_use_with_jev/bridge.py").is_file(),
     }
     versions = {}
     if checks["virtualenv"]:

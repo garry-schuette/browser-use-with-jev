@@ -1,7 +1,6 @@
 """Thin adapter: selection changes, upstream execution and tools remain intact."""
 
 import json
-from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -24,7 +23,7 @@ class RoutingStats:
     jev_errors: int = 0
     stale_decisions: int = 0
     jev_ms: float = 0
-    handoffs: Counter = field(default_factory=Counter)
+    handoffs: dict[str, int] = field(default_factory=dict)
 
 
 class JevAgent(Agent):
@@ -78,7 +77,7 @@ class JevAgent(Agent):
 
     async def _host(self, messages, reason):
         self.routing.host_calls += 1
-        self.routing.handoffs[reason] += 1
+        self.routing.handoffs[reason] = self.routing.handoffs.get(reason, 0) + 1
         self._jev_streak = 0
         self.logger.info("Jev → host: %s", reason)
         hint = UserMessage(

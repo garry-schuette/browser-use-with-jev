@@ -312,6 +312,7 @@ source = { editable = "." }
 dependencies = [
     { name = "browser-use" },
     { name = "httpx" },
+    { name = "jsonschema" },
 ]
 
 [package.dev-dependencies]
@@ -325,6 +326,7 @@ dev = [
 requires-dist = [
     { name = "browser-use", specifier = "==0.13.10" },
     { name = "httpx", specifier = ">=0.28.1,<0.29" },
+    { name = "jsonschema", specifier = ">=4.26,<5" },
 ]
 
 [package.metadata.requires-dev]

@@ -1,4 +1,4 @@
 interface:
   display_name: "Browser Use with Jev"
-  short_description: "Use and improve Jev routing with upstream Browser Use"
+  short_description: "Run Jev browser tasks with this conversation as host"
   default_prompt: "Use $browser-use-with-jev for this browser task and verify the result."

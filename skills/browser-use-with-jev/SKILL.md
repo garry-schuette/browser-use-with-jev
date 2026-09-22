@@ -1,6 +1,6 @@
 ---
 name: browser-use-with-jev
-description: Use and iterate on Browser Use with Jev, the Python integration that retains upstream Browser Use execution while routing bounded choices to Jev. Use for browser tasks explicitly using this integration and for extending, testing, or debugging its decision routing and host-model handoffs.
+description: Run browser tasks inside the current Codex conversation using Jev decisions and upstream Browser Use. The local bridge hands generation, screenshots, and verification back to this agent without another text-model API key. Also use for extending and debugging this integration.
 ---
 
 # Browser Use with Jev
@@ -30,19 +30,20 @@ any existing conflicting skill instead of overwriting it.
 1. Use upstream Browser Use as the browser runtime. Keep the user's task and
    authorized effects intact. `JevAgent` accepts the original `browser`, `tools`,
    host `llm`, and other upstream options.
-2. Load Jev credentials only from `TYPESAFE_API_KEY` or the file explicitly
-   supplied by the user. `JevClient.from_env(path)` supports dotenv and raw-key
-   files. Never print credentials, store them in this skill, or add them to Git.
+2. Load Jev credentials from `TYPESAFE_API_KEY`, a file explicitly supplied by the
+   user, or the saved bridge configuration. `bridge configure --jev-env PATH`
+   saves only the path. Do not ask again when this is already configured.
+   Never print credentials, store them in this skill, or add them to Git.
 3. A real host model is required for text generation, complex tools, recovery,
    and completion. If the user has configured an API-backed host, use
    `<checkout>/examples/basic.py` or the SDK. Pass task text through structured
    arguments or a safely written script rather than unsafe shell interpolation.
-4. If the user wants the current Codex model to serve as the host, check the
-   current README and runtime implementation. As shipped initially, `HostModel`
-   is an async callback interface only; no Codex communication bridge exists.
-   Do not claim the callback automatically uses this conversation, invent host
-   replies, buy another API, or silently switch to a different browser project.
-   Explain that specific missing bridge and implement it when requested.
+4. **For use in the current Codex app, default to the local bridge.** Read
+   [current-conversation workflow](references/current-conversation.md) and run its
+   request/respond loop yourself. Do not ask for an API-backed host model or stop
+   merely because OPENAI_API_KEY is absent. The current assistant generates each
+   host reply from the request's observed evidence using its own inference.
+   The Python worker does not call Codex automatically: your tool loop is the bridge.
 5. Leave action execution and result history with Browser Use. Jev selects
    bounded candidates; it does not emit free-form browser code or verify success.
    Assess the final task from fresh evidence, not Jev's VERIFY choice alone.

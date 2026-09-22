@@ -36,15 +36,25 @@ for existing/custom tools without changing the executor. `allow_candidate` is a
 delegation filter, not a security boundary; host authorization remains upstream.
 Do not change model-generated strings into executable Python/JS or selectors.
 
-`HostModel` provides an inference callback seam for embedding agents. A concrete
-Codex message bridge is future work; no implicit access to a ChatGPT session is
-claimed. Extraction and verification use the same host model protocol.
+`HostModel` provides an inference callback seam for embedding agents. The local
+`bridge` worker implements that seam with private request/response files. The
+active Codex assistant reads each request through its tools, views local images,
+and submits its own schema-validated completion. This includes extraction and
+final judging. The Python process never invokes a hidden Codex endpoint.
+
+Requests use unique IDs, responses are atomically created once, and consumed or
+cancelled requests reject reuse. Waiting requests have a deadline. A cancellation
+marker cancels the upstream run, and normal shutdown closes its isolated browser.
+The session directory holds private page data and should live outside the repo.
+The file queue is a same-user local trust boundary, not an authenticated service
+for mutually untrusted local processes. It does not persist a resumable browser
+worker across process death.
 
 ## Next validation milestones
 
 - Local browser fixtures: input, dropdown, pagination, tab switch, upload,
   extraction and a custom tool, including failures after action execution.
-- End-to-end host-runtime handoff with no additional text-model API key.
+- Broader live host-runtime coverage beyond the verified local form task.
 - Matched upstream-only vs hybrid runs: task success, Jev selection share,
   all host calls (including auxiliary calls), tokens, elapsed time and cost.
 - Expand selection to observed dropdown choices and host-generated parameter

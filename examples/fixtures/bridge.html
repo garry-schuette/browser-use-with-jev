@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Jev bridge test</title></head>
+  <body>
+    <h1>Local bridge verification</h1>
+    <label>Name <input id="name" placeholder="Your name"></label>
+    <label><input id="agree" type="checkbox"> Enable greeting</label>
+    <button id="show">Show greeting</button>
+    <p id="result"></p>
+    <script>
+      document.getElementById('show').addEventListener('click', () => {
+        if (document.getElementById('agree').checked) {
+          document.getElementById('result').textContent =
+            'Hello, ' + document.getElementById('name').value + '!';
+        }
+      });
+    </script>
+  </body>
+</html>

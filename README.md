@@ -9,9 +9,13 @@ choose from concrete browser actions while a host model handles generation,
 complex tools, recovery, and final verification. [Browser Use](https://github.com/browser-use/browser-use)
 is an installed dependency; its source is not vendored or patched.
 
-**Status: early alpha.** Offline integration tests pass. Real-browser end-to-end
-coverage and comparative performance benchmarks are still pending. Moving most
+**Status: early alpha.** Offline integration tests pass. The current-conversation
+bridge has been exercised on a local browser form; broad site coverage and
+comparative performance benchmarks are still pending. Moving most
 routine decisions to Jev is the goal, not a measured claim about this release.
+
+See the [live bridge verification](docs/bridge-verification.md) for the tested
+workflow, observed results, and limits.
 
 This is an independent project, not an official Browser Use or TypeSafe product.
 It does not depend on `jev-ultrafast` or the community `jev-browser-use` Skill.
@@ -116,9 +120,37 @@ or model matching the requested Pydantic `output_format`, or a string when it is
 `None`. Messages may include images. The callback supports the same model protocol
 used by upstream extraction and verification.
 
-**A ready-to-use Codex communication bridge is not implemented yet.** This
-callback does not implicitly access a ChatGPT/Codex session. The Skill below
-guides SDK use and development; installing it does not supply that missing bridge.
+### Run directly inside the current Codex conversation
+
+The local bridge now connects Browser Use host requests to the current assistant's
+tool loop. No separate text-model API key is needed. The assistant reads the
+request and screenshots, generates the response in this conversation, and submits
+it to the waiting worker. There is no hidden Codex API or unattended model service.
+
+After installing the Skill below, configure your existing Jev credential file once:
+
+```bash
+uv run python -m browser_use_with_jev.bridge configure --jev-env /path/to/jev.env
+```
+
+Only the file path is saved to `~/.config/browser-use-with-jev/config.json`.
+Then ask Codex: **“Use $browser-use-with-jev to complete this browser task.”**
+The Skill manages the `start → request → respond → status` loop. It uses a new
+isolated browser profile, not the user's already logged-in Chrome tabs. Sessions
+require an active assistant tool loop and cannot generate host replies after the
+conversation stops. See the [bridge workflow](skills/browser-use-with-jev/references/current-conversation.md).
+
+Advanced command reference:
+
+```bash
+uv run python -m browser_use_with_jev.bridge --help
+```
+
+Each request includes the actual output schema, so extraction and final judging
+are supported alongside action generation. Response IDs prevent duplicate replies;
+timeouts and `cancel` stop waiting work. Session directories contain private page
+content and screenshots and must stay out of Git. Default browser extensions are
+disabled for bridge sessions; `--extensions` enables upstream extension downloads.
 
 ## Install the Codex Skill for ongoing development
 
@@ -198,7 +230,7 @@ display detection at import time may require running outside a restrictive sandb
 ## Roadmap
 
 - Real-browser fixtures covering input, dropdowns, pagination, uploads and recovery.
-- A host-agent communication bridge that reuses the active agent's generation.
+- Broader real-site validation and recovery coverage for the current-conversation bridge.
 - More observed-parameter candidates, especially dropdown selections.
 - Matched upstream-only versus hybrid benchmarks: success, decision share,
   latency, all model calls, tokens, and cost.
