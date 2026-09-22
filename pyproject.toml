@@ -7,7 +7,8 @@ name = "browser-use-with-jev"
 version = "0.1.0"
 description = "Browser Use with Jev decisions and full host-model handoff"
 readme = "README.md"
-license-files = []
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = ["browser-use==0.13.10", "httpx>=0.28.1,<0.29"]
 
@@ -22,7 +23,7 @@ dev = ["pytest>=8.4,<9", "pytest-asyncio>=1,<2", "ruff>=0.14,<1"]
 packages = ["src/browser_use_with_jev"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/src", "/tests", "/docs", "/examples", "/scripts", "/skills", "/.github", "/README.md", "/README.zh-CN.md", "/.env.example", "/pyproject.toml", "/uv.lock"]
+include = ["/src", "/tests", "/docs", "/examples", "/scripts", "/skills", "/.github", "/README.md", "/LICENSE", "/.env.example", "/pyproject.toml", "/uv.lock"]
 exclude = ["/.archive"]
 
 [tool.pytest.ini_options]

@@ -1,7 +1,6 @@
 # Browser Use with Jev
 
 [![Tests](https://github.com/ZiyaoLi/browser-use-with-jev/actions/workflows/ci.yml/badge.svg)](https://github.com/ZiyaoLi/browser-use-with-jev/actions/workflows/ci.yml)
-[中文说明](README.zh-CN.md)
 
 **Keep Browser Use's execution engine. Move bounded decisions to Jev.**
 
@@ -209,3 +208,7 @@ Contributions should keep browser execution upstream-owned, add regression tests
 for behavior changes, and distinguish simulated tests from real-browser evidence.
 Please report issues with Python/Browser Use versions and a minimal reproduction,
 without credentials or private page data.
+
+## License
+
+MIT License. See [LICENSE](LICENSE). Dependencies retain their own licenses.
