@@ -94,8 +94,22 @@ agent = JevAgent(
 ```
 
 `your_host_runtime` 是应用需提供的接口，不是内置模块。当前尚未实现让终端进程
-自动向 Codex 会话请求推理的通信桥，也没有安装新的 Skill；回调接口
-不代表已自动接通当前 Codex 模型。
+自动向 Codex 会话请求推理的通信桥；回调接口不代表已自动接通当前 Codex 模型。
+
+## 安装可持续迭代的 Skill
+
+在项目目录运行：
+
+```bash
+python3 scripts/install_skill.py
+python3 skills/browser-use-with-jev/scripts/doctor.py
+```
+
+安装器将个人 Skills 目录中的 `browser-use-with-jev` 链接到当前仓库，
+之后可用 `$browser-use-with-jev` 调用。仓库里的 Skill 修改会在下次读取时生效，
+不必重复安装；请保留仓库路径。修改依赖后仍需 `uv sync --locked`，
+运行中的 Python 进程需重启。Skill 指导 SDK 使用和开发，不会补齐尚未实现的
+Codex 推理通信桥，也不替换社区版 `$jev-browser-use`。
 
 ## 让更多工具决策交给 Jev
 

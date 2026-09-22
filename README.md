@@ -118,8 +118,28 @@ or model matching the requested Pydantic `output_format`, or a string when it is
 used by upstream extraction and verification.
 
 **A ready-to-use Codex communication bridge is not implemented yet.** This
-callback does not implicitly access a ChatGPT/Codex session, and this repository
-does not currently install a Skill.
+callback does not implicitly access a ChatGPT/Codex session. The Skill below
+guides SDK use and development; installing it does not supply that missing bridge.
+
+## Install the Codex Skill for ongoing development
+
+From this checkout:
+
+```bash
+python3 scripts/install_skill.py
+python3 skills/browser-use-with-jev/scripts/doctor.py
+```
+
+The installer links `~/.codex/skills/browser-use-with-jev` to this checkout
+(or uses `$CODEX_HOME/skills`). Invoke **`$browser-use-with-jev`** in a later turn.
+Skill edits are picked up when it is loaded again; no reinstall is needed.
+Keep the checkout in place. Restart the app if a new skill is not discovered.
+Dependencies still need `uv sync --locked` when the lockfile changes, and running
+Python processes must restart to load code changes.
+
+The link installer preserves conflicting existing skills. Use `--skills-dir`
+for a different installation directory. The skill does not replace the community
+`$jev-browser-use`, store credentials, or automatically upgrade dependencies.
 
 ### Extend decision coverage
 
@@ -165,8 +185,8 @@ this repository; tests disable telemetry and use fake API/browser responses.
 
 ```bash
 uv sync --locked
-uv run ruff check src tests examples
-uv run ruff format --check src tests examples
+uv run ruff check src tests examples scripts skills
+uv run ruff format --check src tests examples scripts skills
 uv run pytest -q
 uv build
 ```

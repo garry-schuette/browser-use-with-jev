@@ -22,7 +22,7 @@ dev = ["pytest>=8.4,<9", "pytest-asyncio>=1,<2", "ruff>=0.14,<1"]
 packages = ["src/browser_use_with_jev"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/src", "/tests", "/docs", "/examples", "/.github", "/README.md", "/README.zh-CN.md", "/.env.example", "/pyproject.toml", "/uv.lock"]
+include = ["/src", "/tests", "/docs", "/examples", "/scripts", "/skills", "/.github", "/README.md", "/README.zh-CN.md", "/.env.example", "/pyproject.toml", "/uv.lock"]
 exclude = ["/.archive"]
 
 [tool.pytest.ini_options]
