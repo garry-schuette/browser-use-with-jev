@@ -42,6 +42,8 @@ project.
 
 ## Use in Codex desktop
 
+Follow the steps below—or simply send [this repository URL](https://github.com/ZiyaoLi/browser-use-with-jev) to your Codex and ask it to install and configure the Skill for you.
+
 **The active Codex conversation can serve as the host model. No additional
 OpenAI or other text-model API key is required for this mode.** Jev still needs
 its own TypeSafe API key. The local bridge connects the assistant's tool loop to
