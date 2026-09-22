@@ -18,7 +18,115 @@ See the [live bridge verification](docs/bridge-verification.md) for the tested
 workflow, observed results, and limits.
 
 This is an independent project, not an official Browser Use or TypeSafe product.
-It does not depend on `jev-ultrafast` or the community `jev-browser-use` Skill.
+
+## Motivation and related projects
+
+I built this independent implementation after exploring
+[Browser Use's Jev Ultrafast](https://github.com/browser-use/jev-ultrafast).
+Its dynamic, indexed action space motivated the split here: let Jev choose among
+concrete actions and let a general-purpose model handle generation and judgment.
+My goal is to retain upstream Browser Use capabilities while moving most routine
+decisions to Jev, with the current Codex conversation available as the host.
+
+| Project | Relationship to this implementation |
+| --- | --- |
+| [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast) | Browser Use's own Jev experiment and the primary motivation; a standalone agent with a small text-generation model |
+| [browser-use/browser-use](https://github.com/browser-use/browser-use) | The actual execution dependency here: browser sessions, tools, history, and agent loop |
+| [wy-coliney/jev-browser-use](https://github.com/wy-coliney/jev-browser-use) | Related community Skill that combines Jev with Codex's existing Computer Use connection |
+
+This repository implements its own routing and current-conversation bridge on top
+of the Browser Use dependency. It is not the official Ultrafast Skill, a fork of
+Ultrafast, or a repackaging of the community Skill. Neither related implementation
+is a runtime dependency. Their published speed claims are not benchmarks for this
+project.
+
+## Use in Codex desktop
+
+**The active Codex conversation can serve as the host model. No additional
+OpenAI or other text-model API key is required for this mode.** Jev still needs
+its own TypeSafe API key. The local bridge connects the assistant's tool loop to
+Browser Use; it does not expose your Codex login as an API.
+
+### 1. Install the checkout and Skill
+
+Use a local Codex desktop project with shell access. Install Git,
+[uv](https://docs.astral.sh/uv/getting-started/installation/), Python 3.11+, and a
+Chrome/Chromium browser supported by Browser Use. This workflow has been exercised
+on macOS; other desktop platforms have not been verified end to end.
+
+Run in a terminal, or ask Codex to run these commands:
+
+```bash
+git clone https://github.com/ZiyaoLi/browser-use-with-jev.git
+cd browser-use-with-jev
+uv sync --locked
+python3 scripts/install_skill.py
+python3 skills/browser-use-with-jev/scripts/doctor.py
+```
+
+Keep this checkout on disk and open it as a local project in Codex for setup.
+The installer creates a live link at `~/.codex/skills/browser-use-with-jev`
+(or `$CODEX_HOME/skills/browser-use-with-jev`). It preserves conflicting existing
+installations. Install the full checkout: copying only the Skill directory omits
+the Python runtime it needs. No custom MCP server or Computer Use plugin is
+required by this bridge.
+
+### 2. Configure Jev once
+
+If your existing key file is `~/.jev.env`, run from the checkout:
+
+```bash
+uv run python -m browser_use_with_jev.bridge configure --jev-env ~/.jev.env
+```
+
+Substitute your actual file path. The file may contain a single raw key or a
+dotenv entry named `TYPESAFE_API_KEY`. Only its path is saved in
+`~/.config/browser-use-with-jev/config.json`; the credential is not copied into
+the Skill. You do not need to create the API-host `.env` shown later in this README.
+
+### 3. Give Codex a browser task
+
+Start a new local task and explicitly mention the Skill:
+
+```text
+Use $browser-use-with-jev with the current conversation as the host.
+Open https://example.com and report its title. Verify it from the page.
+```
+
+Codex launches Browser Use, services host requests using this conversation, and
+checks the result. You do not need to write JSON replies or run the bridge queue
+commands yourself. The browser uses a separate profile; logins from your usual
+Chrome tabs are not inherited. Keep the Codex task active until it finishes:
+the worker cannot generate host replies after the assistant stops.
+
+The setup above can also be requested in plain language:
+
+```text
+Install https://github.com/ZiyaoLi/browser-use-with-jev as a live local Skill.
+Follow its README, use my existing Jev key file at ~/.jev.env, and preserve
+existing configuration. Use the current Codex conversation as the host.
+Then open https://example.com and verify its title with $browser-use-with-jev.
+```
+
+### Updates and troubleshooting
+
+To update an unmodified checkout, run `git pull --ff-only` and `uv sync --locked`
+from its directory. For local development, edit that same checkout. Skill changes
+are available on subsequent loads; restart running workers to load Python changes.
+
+| Symptom | Next step |
+| --- | --- |
+| Skill is missing | Start a new task or restart Codex; verify the checkout still exists and rerun the doctor |
+| Your Codex version uses `~/.agents/skills` | Install with `python3 scripts/install_skill.py --skills-dir ~/.agents/skills`; avoid duplicate copies in multiple discovery paths |
+| Missing dependency or interpreter | Run `uv sync --locked` in the checkout and rerun the doctor |
+| Asked for a host API key | Explicitly request the current-conversation bridge with `$browser-use-with-jev`; `OPENAI_API_KEY` is unnecessary in that mode |
+| Browser fails to launch | Check upstream browser setup and local execution permissions; macOS display access can require running outside a restrictive sandbox |
+
+See [OpenAI's Skill documentation](https://learn.chatgpt.com/docs/build-skills)
+for discovery and invocation, and our
+[bridge workflow](skills/browser-use-with-jev/references/current-conversation.md)
+for the implementation. The doctor checks installation only; a successful live
+browser task is a separate check.
 
 ## How it works
 
@@ -49,7 +157,10 @@ The original run loop, browser session, tool execution, history, and completion
 machinery remain upstream-owned. This preserves those code paths; it is not a
 claim that every upstream feature has been tested end to end in hybrid mode.
 
-## Quick start
+## Standalone quick start with an API host
+
+For desktop Codex using the current conversation, follow
+[Use in Codex desktop](#use-in-codex-desktop) above instead.
 
 Requires Python 3.11+, [uv](https://docs.astral.sh/uv/), a TypeSafe API key,
 and a Browser Use-compatible host model. The dependency is pinned to
