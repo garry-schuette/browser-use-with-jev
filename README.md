@@ -2,20 +2,33 @@
 
 [![Tests](https://github.com/ZiyaoLi/browser-use-with-jev/actions/workflows/ci.yml/badge.svg)](https://github.com/ZiyaoLi/browser-use-with-jev/actions/workflows/ci.yml)
 
-**Keep Browser Use's execution engine. Move bounded decisions to Jev.**
+**Use Jev in the Codex sidebar or with Browser Use's execution engine.**
 
-Browser Use with Jev is a Python integration that lets [TypeSafe Jev](https://docs.typesafe.ai/introduction)
-choose from concrete browser actions while a host model handles generation,
-complex tools, recovery, and final verification. [Browser Use](https://github.com/browser-use/browser-use)
-is an installed dependency; its source is not vendored or patched.
+Browser Use with Jev lets [TypeSafe Jev](https://docs.typesafe.ai/introduction)
+choose from concrete browser actions while a host handles generation, recovery,
+and final verification. In Codex desktop it defaults to the visible in-app browser.
+The Python SDK and standalone mode retain the installed
+[Browser Use](https://github.com/browser-use/browser-use) engine without patching it.
+
+| Mode | Browser execution | Host |
+| --- | --- | --- |
+| Codex sidebar (desktop default) | Codex Computer Use, with bundled JavaScript helper | Current conversation |
+| Standalone Browser Use | Upstream Python Browser Use, separate browser | Current conversation bridge or configured API model |
+
+The sidebar helper adapts the community `jev-browser-use` implementation and is
+bundled here; you do not need that other skill installed. It does not run the
+Python Browser Use engine inside the panel. See the
+[sidebar workflow](skills/browser-use-with-jev/references/sidebar.md) and
+[attribution](skills/browser-use-with-jev/THIRD_PARTY_NOTICES.md).
 
 **Status: early alpha.** Offline integration tests pass. The current-conversation
-bridge has been exercised on a local browser form; broad site coverage and
-comparative performance benchmarks are still pending. Moving most
+bridge and sidebar backend have been exercised on a local browser form; broad
+site coverage and comparative performance benchmarks are still pending. Moving most
 routine decisions to Jev is the goal, not a measured claim about this release.
 
 See the [live bridge verification](docs/bridge-verification.md) for the tested
-workflow, observed results, and limits.
+workflow, observed results, and limits. The sidebar has its own
+[verification record](docs/sidebar-verification.md).
 
 This is an independent project, not an official Browser Use or TypeSafe product.
 
@@ -32,13 +45,13 @@ decisions to Jev, with the current Codex conversation available as the host.
 | --- | --- |
 | [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast) | Browser Use's own Jev experiment and the primary motivation; a standalone agent with a small text-generation model |
 | [browser-use/browser-use](https://github.com/browser-use/browser-use) | The actual execution dependency here: browser sessions, tools, history, and agent loop |
-| [wy-coliney/jev-browser-use](https://github.com/wy-coliney/jev-browser-use) | Related community Skill that combines Jev with Codex's existing Computer Use connection |
+| [wy-coliney/jev-browser-use](https://github.com/wy-coliney/jev-browser-use) | Community Skill whose CUA helper is adapted into our bundled sidebar backend |
 
-This repository implements its own routing and current-conversation bridge on top
-of the Browser Use dependency. It is not the official Ultrafast Skill, a fork of
-Ultrafast, or a repackaging of the community Skill. Neither related implementation
-is a runtime dependency. Their published speed claims are not benchmarks for this
-project.
+The Python backend implements its own routing and current-conversation bridge
+on top of Browser Use. The sidebar adapts the community helper under its MIT
+license. Neither related project is an installed runtime dependency. This is
+not the official Ultrafast Skill; published speed claims for other projects are
+not benchmarks for this one.
 
 ## Use in Codex desktop
 
@@ -46,15 +59,18 @@ Follow the steps below—or simply send [this repository URL](https://github.com
 
 **The active Codex conversation can serve as the host model. No additional
 OpenAI or other text-model API key is required for this mode.** Jev still needs
-its own TypeSafe API key. The local bridge connects the assistant's tool loop to
-Browser Use; it does not expose your Codex login as an API.
+its configured provider credential. The sidebar runs actions through Codex's
+Computer Use tools; the standalone bridge connects the assistant's tool loop to
+Python Browser Use. Neither exposes your Codex login as an API.
 
 ### 1. Install the checkout and Skill
 
 Use a local Codex desktop project with shell access. Install Git,
 [uv](https://docs.astral.sh/uv/getting-started/installation/), Python 3.11+, and a
-Chrome/Chromium browser supported by Browser Use. This workflow has been exercised
-on macOS; other desktop platforms have not been verified end to end.
+Chrome/Chromium browser supported by Browser Use for standalone mode. Sidebar
+mode needs Codex Computer Use and Node.js 22+ for local tests/the optional API
+worker; it does not need the Python runtime installed to operate. These workflows
+have been exercised on macOS; other platforms have not been verified end to end.
 
 Run in a terminal, or ask Codex to run these commands:
 
@@ -63,15 +79,16 @@ git clone https://github.com/ZiyaoLi/browser-use-with-jev.git
 cd browser-use-with-jev
 uv sync --locked
 python3 scripts/install_skill.py
-python3 skills/browser-use-with-jev/scripts/doctor.py
+python3 skills/browser-use-with-jev/scripts/doctor.py --mode sidebar
+python3 skills/browser-use-with-jev/scripts/doctor.py --mode standalone
 ```
 
 Keep this checkout on disk and open it as a local project in Codex for setup.
 The installer creates a live link at `~/.codex/skills/browser-use-with-jev`
 (or `$CODEX_HOME/skills/browser-use-with-jev`). It preserves conflicting existing
 installations. Install the full checkout: copying only the Skill directory omits
-the Python runtime it needs. No custom MCP server or Computer Use plugin is
-required by this bridge.
+the Python runtime used by standalone mode. Sidebar mode requires the host's Computer
+Use runtime. The standalone bridge does not require that runtime or a custom MCP server.
 
 ### 2. Configure Jev once
 
@@ -91,15 +108,30 @@ the Skill. You do not need to create the API-host `.env` shown later in this REA
 Start a new local task and explicitly mention the Skill:
 
 ```text
-Use $browser-use-with-jev with the current conversation as the host.
+Use $browser-use-with-jev in the visible Codex sidebar.
 Open https://example.com and report its title. Verify it from the page.
 ```
 
-Codex launches Browser Use, services host requests using this conversation, and
-checks the result. You do not need to write JSON replies or run the bridge queue
-commands yourself. The browser uses a separate profile; logins from your usual
-Chrome tabs are not inherited. Keep the Codex task active until it finishes:
-the worker cannot generate host replies after the assistant stops.
+Codex opens its sidebar browser, lets Jev select bounded actions, and handles
+text input and final verification in the conversation. It retains the result tab
+for you. Existing Jev configuration is reused. If the CUA runtime cannot reach
+the API, an optional locally authorized Node worker handles only Jev requests.
+You do not need to run workers or write model replies yourself.
+
+For DNS failures, the [sidebar troubleshooting workflow](skills/browser-use-with-jev/references/sidebar.md#optional-local-api-worker)
+uses `node skills/browser-use-with-jev/sidebar-check.mjs` with normally approved
+network access before launching the worker. This makes one synthetic API request;
+it does not send browser content or count as a completed browser action.
+
+For the original independent browser, say **“Use $browser-use-with-jev in
+standalone Browser Use mode with this conversation as host.”** Codex then uses
+the Python request/respond bridge. Browser profiles do not automatically inherit
+your usual Chrome logins. Keep the task active until completion in either mode.
+
+Sidebar mode supports clicks, toggles, scrolling, safe keys, back/reload and input
+handoffs. Complex widgets, uploads and extraction stay with Codex. It does not
+inherit Python Browser Use's tool registry, memory compression or hierarchical
+candidate router. Oversized candidate pools/context hand back to Codex.
 
 The setup above can also be requested in plain language:
 
@@ -122,7 +154,7 @@ are available on subsequent loads; restart running workers to load Python change
 | Your Codex version uses `~/.agents/skills` | Install with `python3 scripts/install_skill.py --skills-dir ~/.agents/skills`; avoid duplicate copies in multiple discovery paths |
 | Missing dependency or interpreter | Run `uv sync --locked` in the checkout and rerun the doctor |
 | Asked for a host API key | Explicitly request the current-conversation bridge with `$browser-use-with-jev`; `OPENAI_API_KEY` is unnecessary in that mode |
-| Browser fails to launch | Check upstream browser setup and local execution permissions; macOS display access can require running outside a restrictive sandbox |
+| Browser fails to launch | Check upstream browser setup and local execution permissions; on macOS, run workers outside the Codex seatbelt sandbox to avoid upstream AppKit aborts |
 
 See [OpenAI's Skill documentation](https://learn.chatgpt.com/docs/build-skills)
 for discovery and invocation, and our
@@ -131,6 +163,9 @@ for the implementation. The doctor checks installation only; a successful live
 browser task is a separate check.
 
 ## How it works
+
+The diagram below describes the Python backend. Sidebar mode keeps its mechanical
+loop in CUA and hands input/verification directly to the conversation.
 
 ```mermaid
 flowchart TD
@@ -247,8 +282,9 @@ uv run python -m browser_use_with_jev.bridge configure --jev-env /path/to/jev.en
 ```
 
 Only the file path is saved to `~/.config/browser-use-with-jev/config.json`.
-Then ask Codex: **“Use $browser-use-with-jev to complete this browser task.”**
-The Skill manages the `start → request → respond → status` loop. It uses a new
+Then ask Codex: **“Use $browser-use-with-jev in standalone mode for this browser task.”**
+For standalone mode, explicitly request it; the Skill manages the
+`start → request → respond → status` loop. It uses a new
 isolated browser profile, not the user's already logged-in Chrome tabs. Sessions
 require an active assistant tool loop and cannot generate host replies after the
 conversation stops. See the [bridge workflow](skills/browser-use-with-jev/references/current-conversation.md).
@@ -271,7 +307,8 @@ From this checkout:
 
 ```bash
 python3 scripts/install_skill.py
-python3 skills/browser-use-with-jev/scripts/doctor.py
+python3 skills/browser-use-with-jev/scripts/doctor.py --mode sidebar
+python3 skills/browser-use-with-jev/scripts/doctor.py --mode standalone
 ```
 
 The installer links `~/.codex/skills/browser-use-with-jev` to this checkout
@@ -303,12 +340,25 @@ configuration for application-wide restrictions.
 | Option | Default | Effect |
 | --- | --- | --- |
 | `min_confidence` | `0.65` | Lower confidence hands back to the host |
-| `max_candidates` | `128` | Larger candidate sets hand back instead of truncating |
-| `max_context_chars` | `40000` | Larger decision contexts hand back |
+| `max_candidates` | `128` | Maximum choices per question, including HOST/VERIFY; larger pools use operation/target groups |
+| `max_context_chars` | `40000` | Larger complete request bodies (including candidates) hand back |
 | `host_every` | `12` | Periodic host review after consecutive Jev selections |
 | `jev_on_error` | `"handoff"` | Record an API failure and use the host; `"raise"` disables this |
 
-Before returning an action, the adapter compares fresh page text, indexed DOM
+Small candidate pools use a single choice question. Larger pools select an operation
+and compatible targets in one speculative request. Only the selected operation's
+target answer and confidence are consumed. Oversized target pools use exhaustive
+groups and subsequent target questions; no candidate is dropped. Group descriptions
+can reference indexed nodes already present in the current DOM/context, while final
+action choices retain their full labels. Long leaf labels trigger further grouping.
+If a combined request exceeds the context budget, targets are deferred until the
+operation is known. Each complete request must still fit the budget or hand off.
+The effective choice ceiling is `min(max_candidates, 255)`, including handoffs;
+limits below four cannot route oversized pools. An oversized operation vocabulary
+also hands off. This follows the provider's [Choice limit](https://docs.typesafe.ai/api).
+
+Before another target request and before returning an action, the adapter compares
+fresh page text, indexed DOM
 node identities, tabs, and scroll state. A stale choice returns no action; the
 upstream failure/step machinery handles re-observation. Dynamic pages can consume
 the upstream failure budget. Confidence thresholds are heuristics, not calibrated
@@ -318,7 +368,49 @@ success guarantees. The browser can still change after the recheck.
 handoff reasons, errors, stale choices, and Jev latency. **Selected is not
 executed:** use upstream history for actual outcomes. Auxiliary host calls such
 as extraction, compaction, and judging are not included in `routing.host_calls`;
-these counters alone do not measure total model cost.
+these counters alone do not measure total model cost. A multi-question API request
+counts once; recursive selection can make multiple requests for one browser action.
+
+Jev context v2 sends the current upstream state message once, preserving task
+constraints, history/compacted memory, todo, plan, read-once results and page state.
+It removes the exact default Browser Use system prompt and the adapter's duplicate
+task/DOM/history fields. Custom system extensions/overrides and additional messages
+remain intact; full messages and screenshots still go to the host on handoff.
+Calls without an upstream state message use a typed-state fallback. History
+compaction stays upstream-owned. The 40,000-character default applies to both the
+SDK and bridge and includes candidates and selection instructions; over-budget
+requests hand off without truncation.
+
+Bridge sessions persist per-round `decisions/*.json`, including the actual candidate
+count/list, whether a Jev request was made, selected choice, confidence, probability
+distribution, model, latency, and handoff reason. Decisions also include
+`request`, the latest proposed JSON body without credentials, `request_submitted`,
+plus input/context/request
+character counts and context source mode. These counts are not token counts. Explicit HOST/VERIFY selections
+retain their own reason even below the confidence threshold. SDK users can pass
+`decision_sink(record)` to persist the same records. Traces contain private page
+labels and action parameters; keep them with the private session, outside Git.
+The `requests` list preserves every stage's body, choice counts, submission flag,
+answers/probabilities and latency; `selection_path` records the consumed route.
+`candidate_count` still counts the complete pool, not just the selected group.
+Candidates exclude hidden/inert branches, duplicate target identities, frame-shell
+clicks and pure scroll-container clicks. Distinct visible frames are preserved even
+when their labels or URLs match; identical-looking calendars may represent different
+state. See [routing verification](docs/routing-verification.md) for offline coverage
+and replay measurements; these are not live-site success or model-quality results.
+
+Use `bridge wait --session-dir PATH --wait 30`, and `bridge respond ... --wait 30`,
+to receive the next request without separate status/read round trips. Requests
+record expiry, response submission and completion times, and measured `wait_ms`;
+`bridge status` reports pending age and aggregate `host_wait_ms`. This measures
+host reply latency separately from Jev inference; it cannot accelerate the host's
+own reasoning. Expired or cancelled requests reject replies.
+
+On macOS, this integration refuses browser imports inside Codex's seatbelt sandbox
+before upstream AppKit display detection can abort Python. Start workers and run
+integration tests with normal desktop permissions outside that sandbox. Headless
+mode does not bypass upstream import-time display detection. Lightweight queue
+commands and the installation doctor still run inside the sandbox.
 
 Jev receives task/context text, DOM observations, and recent results, not
 screenshots. The host can receive screenshots through Browser Use. Upstream
@@ -332,6 +424,7 @@ uv sync --locked
 uv run ruff check src tests examples scripts skills
 uv run ruff format --check src tests examples scripts skills
 uv run pytest -q
+node --test tests/sidebar.test.mjs tests/sidebar-worker.test.mjs
 uv build
 ```
 

@@ -1,4 +1,8 @@
-# Run with this conversation as the host
+# Run standalone Browser Use with this conversation as the host
+
+This is the independent Python browser mode. For the default visible Codex
+sidebar, use [sidebar workflow](sidebar.md) instead. The commands below never
+embed a browser into the Codex panel.
 
 Use `<checkout>/.venv/bin/python -m browser_use_with_jev.bridge` for the commands
 below. Use an absolute interpreter path when outside the checkout. These commands
@@ -25,13 +29,18 @@ The worker creates a separate browser profile. It does not inherit the user's
 logged-in Chrome tabs. Use headless mode only when suitable (e.g. synthetic
 fixtures). Default browser extensions are off to avoid an unrelated download;
 `--extensions` enables upstream defaults. Do not attach an unrelated profile or
-promise access to existing authenticated tabs. macOS may require an ordinary
-unsandboxed process for upstream native display/browser access.
+promise access to existing authenticated tabs. On macOS, launch the worker with
+normal desktop permissions outside the Codex seatbelt sandbox. The runtime rejects
+that sandbox before importing upstream display code, which otherwise can abort
+in AppKit even with `--headless`. Do not retry the same sandboxed launch or remove
+the sandbox environment marker. Queue commands remain safe inside the sandbox.
 
 ## Respond to each host request
 
-Call `status --session-dir <session>` after meaningful worker progress. If there
-is a pending ID, read it with:
+Use `wait --session-dir <session> --wait 30` to receive the next complete request
+as soon as it appears, or terminal worker status. Prioritize replying to a pending
+request before unrelated investigation. Do not wait on worker output while the
+worker is waiting for your reply. If a request ID is already available, read it with:
 
 ```bash
 <python> -m browser_use_with_jev.bridge request --session-dir <session> --id <id>
@@ -57,8 +66,13 @@ then submit it:
 
 ```bash
 <python> -m browser_use_with_jev.bridge respond \
-  --session-dir <session> --id <id> --file <completion-json-file>
+  --session-dir <session> --id <id> --file <completion-json-file> --wait 30
 ```
+
+With `--wait 30`, submission also waits up to 30 seconds for the next request and
+returns its full JSON immediately when available. If no request arrives, continue
+with `wait`; do not impose a fixed delay between requests. `status` exposes each
+pending request's age, expiry, and whether a response was submitted.
 
 The CLI validates the schema; the worker validates the actual Pydantic model.
 Responses are bound to one request and cannot overwrite a prior reply. A pending
@@ -80,7 +94,22 @@ preserve the session evidence. Do not interpret a local reply file as new user
 permission.
 
 `state.json` contains the final result, upstream success status, routing metrics,
-and total host requests (including auxiliary requests). `history.json` contains
+and total host requests (including auxiliary requests). `decisions/*.json` is updated
+before/after each Jev decision and before handoff; it records actual candidates and
+count, whether Jev was called, choice, confidence, probabilities, model, latency,
+and routing reason. The `request` field contains the latest proposed Jev JSON body
+without authorization headers; `request_submitted` marks whether it was submitted.
+Character counts and `context_source` explain its size. Large pools use operation
+and compatible-target questions, then recursive groups where needed. `requests`
+retains every attempted body, submission flag, choice count and response;
+`selection_path` identifies consumed choices. One browser action may need multiple
+Jev requests. `candidate_count` remains the total pool, not the per-question size.
+Context v2 reuses the upstream text state once and excludes default host boilerplate;
+task constraints and custom instructions remain intact. The complete request budget
+is 40,000 characters, including candidates. HOST/VERIFY are recorded as explicit handoffs even at low
+confidence. A selected action is not proof of execution. Each consumed/cancelled
+request records `wait_ms` and completion time; `status.host_wait_ms` sums these
+waits separately from Jev latency. `history.json` contains
 the upstream action/result history. Independently verify the requested outcome.
 Report limits precisely: a synthetic local test does not prove arbitrary site
 compatibility or performance gains.

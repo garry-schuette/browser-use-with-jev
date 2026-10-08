@@ -110,3 +110,103 @@ def test_config_uses_explicit_or_environment_before_saved_file(tmp_path, monkeyp
     assert bridge.configured_jev_file("/explicit/credentials") == "/explicit/credentials"
     monkeypatch.setenv("TYPESAFE_API_KEY", "fake")
     assert bridge.configured_jev_file(None) is None
+
+
+async def test_wait_returns_request_and_exact_wait_metrics(tmp_path):
+    from browser_use_with_jev.bridge import wait_for_request
+
+    bridge = FileHostBridge(tmp_path)
+    task = asyncio.create_task(bridge.infer([]))
+    request_id = await pending(tmp_path)
+    result = wait_for_request(tmp_path, timeout=0)
+    assert result["request"]["id"] == request_id
+    assert result["request"]["expires_at"] > result["request"]["created_at"]
+    respond(tmp_path, request_id, "ok")
+    assert "request" not in wait_for_request(tmp_path, timeout=0)
+    assert await task == "ok"
+    saved = json.loads((tmp_path / "requests" / f"{request_id}.json").read_text())
+    assert saved["wait_ms"] >= 0
+    assert saved["completed_at"] >= saved["created_at"]
+    assert status(tmp_path)["host_wait_ms"] == saved["wait_ms"]
+
+
+async def test_expired_and_cancelled_requests_reject_responses(tmp_path):
+    from browser_use_with_jev.bridge import write_json
+
+    task = asyncio.create_task(FileHostBridge(tmp_path).infer([]))
+    request_id = await pending(tmp_path)
+    path = tmp_path / "requests" / f"{request_id}.json"
+    request = json.loads(path.read_text())
+    request["expires_at"] = 0
+    write_json(path, request)
+    with pytest.raises(ValueError, match="expired"):
+        respond(tmp_path, request_id, "late")
+    (tmp_path / "cancel").touch()
+    with pytest.raises(ValueError, match="cancelled"):
+        respond(tmp_path, request_id, "late")
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+def test_sandbox_guard_blocks_native_import_but_queue_commands_work(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    if sys.platform != "darwin":
+        pytest.skip("macOS native display guard")
+    env = {**os.environ, "CODEX_SANDBOX": "seatbelt"}
+    result = subprocess.run(
+        [sys.executable, "-c", "from browser_use_with_jev import JevAgent"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 1  # A Python error, never SIGABRT.
+    assert "AppKit SIGABRT" in result.stderr
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "browser_use_with_jev.bridge",
+            "status",
+            "--session-dir",
+            str(tmp_path),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["pending"] == []
+
+
+async def test_wait_wakes_when_new_request_arrives(tmp_path):
+    from browser_use_with_jev.bridge import wait_for_request
+
+    FileHostBridge(tmp_path)
+    waiter = asyncio.create_task(asyncio.to_thread(wait_for_request, tmp_path, 2))
+    inference = asyncio.create_task(FileHostBridge(tmp_path).infer([]))
+    result = await waiter
+    request_id = result["request"]["id"]
+    respond(tmp_path, request_id, "received")
+    assert await inference == "received"
+
+
+async def test_failed_runtime_preflight_persists_failed_state(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from browser_use_with_jev import runtime
+    from browser_use_with_jev.bridge import start
+
+    def fail():
+        raise RuntimeError("unsafe display")
+
+    monkeypatch.setattr(runtime, "check_browser_runtime", fail)
+    session = tmp_path / "new-session"
+    with pytest.raises(RuntimeError, match="unsafe display"):
+        await start(SimpleNamespace(session_dir=session))
+    assert status(session)["status"] == "failed"
+    assert status(session)["error_type"] == "RuntimeError"

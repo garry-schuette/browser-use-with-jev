@@ -5,9 +5,13 @@ import asyncio
 import json
 from dataclasses import asdict
 
-from browser_use import ChatOpenAI
+from browser_use_with_jev.runtime import check_browser_runtime
 
-from browser_use_with_jev import JevAgent, JevClient
+check_browser_runtime()
+
+from browser_use import ChatOpenAI  # noqa: E402
+
+from browser_use_with_jev import JevAgent, JevClient  # noqa: E402
 
 
 async def main():

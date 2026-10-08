@@ -52,6 +52,8 @@ def configured_jev_file(explicit):
 class FileHostBridge:
     def __init__(self, session, timeout=600):
         self.session = Path(session).resolve()
+        if timeout <= 0:
+            raise ValueError("Host timeout must be positive")
         self.timeout = timeout
         self.lock = asyncio.Lock()
         for directory in [self.session, self.session / "requests", self.session / "images"]:
@@ -89,12 +91,14 @@ class FileHostBridge:
                 "id": request_id,
                 "status": "pending",
                 "created_at": time.time(),
+                "expires_at": time.time() + self.timeout,
                 "messages": self.export_messages(messages, request_id),
                 "output_schema": output_format.model_json_schema() if output_format else None,
             }
             write_json(path, request)
             print(json.dumps({"event": "host_request", "id": request_id}), flush=True)
-            deadline = time.monotonic() + self.timeout
+            started = time.monotonic()
+            deadline = started + self.timeout
             try:
                 while time.monotonic() < deadline:
                     if (self.session / "cancel").exists():
@@ -118,13 +122,15 @@ class FileHostBridge:
                 request["status"] = "cancelled"
                 raise
             finally:
+                request["completed_at"] = time.time()
+                request["wait_ms"] = (time.monotonic() - started) * 1000
                 write_json(path, request)
 
 
 def status(session):
     state_file = session / "state.json"
     state = json.loads(state_file.read_text()) if state_file.exists() else {"status": "unknown"}
-    if state.get("status") == "running" and state.get("pid"):
+    if state.get("status") in {"starting", "running"} and state.get("pid"):
         try:
             os.kill(state["pid"], 0)
         except ProcessLookupError:
@@ -132,18 +138,49 @@ def status(session):
         except PermissionError:
             pass
     pending = []
+    host_wait_ms = 0
     for path in sorted((session / "requests").glob("*.json")):
         if path.name.endswith(".response.json"):
             continue
         request = json.loads(path.read_text())
+        host_wait_ms += request.get("wait_ms", 0)
         if request["status"] == "pending":
-            pending.append({"id": request["id"], "created_at": request["created_at"]})
-    return {**state, "pending": pending}
+            pending.append(
+                {
+                    "id": request["id"],
+                    "created_at": request["created_at"],
+                    "age_seconds": max(0, time.time() - request["created_at"]),
+                    "expires_at": request.get("expires_at"),
+                    "response_submitted": path.with_suffix(".response.json").exists(),
+                }
+            )
+    pending.sort(key=lambda r: r["created_at"])
+    return {**state, "pending": pending, "host_wait_ms": host_wait_ms}
+
+
+def wait_for_request(session, timeout=30):
+    """Return the next complete request immediately, or bounded worker status."""
+    deadline = time.monotonic() + timeout
+    while True:
+        state = status(session)
+        if state["status"] in {"finished", "failed", "cancelled", "interrupted"}:
+            return state
+        for item in state["pending"]:
+            if not item["response_submitted"]:
+                request = json.loads(request_path(session, item["id"]).read_text())
+                return {**state, "request": request}
+        if time.monotonic() >= deadline:
+            return state
+        time.sleep(0.2)
 
 
 def respond(session, request_id, value):
     path = request_path(session, request_id)
     request = json.loads(path.read_text())
+    if (session / "cancel").exists():
+        raise ValueError("Session was cancelled")
+    if time.time() >= request.get("expires_at", float("inf")):
+        raise ValueError("Request has expired")
     if request["status"] != "pending":
         raise ValueError("Request is no longer pending")
     if request["output_schema"] is not None:
@@ -157,12 +194,36 @@ def respond(session, request_id, value):
         {
             "id": request_id,
             "completion": value,
+            "submitted_at": time.time(),
         },
         exclusive=True,
     )
 
 
 async def start(args):
+    from .runtime import check_browser_runtime
+
+    session = args.session_dir.resolve()
+    session.mkdir(mode=0o700, parents=True, exist_ok=False)
+    write_json(session / "state.json", {"status": "starting", "pid": os.getpid()})
+    try:
+        check_browser_runtime()
+        await _start(args)
+    except Exception as error:
+        state = status(session)
+        if state["status"] in {"starting", "running"}:
+            write_json(
+                session / "state.json",
+                {
+                    "status": "failed",
+                    "pid": os.getpid(),
+                    "error_type": type(error).__name__,
+                },
+            )
+        raise
+
+
+async def _start(args):
     # Browser Use imports native display code on macOS; other commands avoid it.
     from browser_use import Browser
 
@@ -171,8 +232,13 @@ async def start(args):
     from .jev import JevClient
 
     session = args.session_dir.resolve()
-    session.mkdir(mode=0o700, parents=True, exist_ok=False)
     bridge = FileHostBridge(session, args.host_timeout)
+    decisions = session / "decisions"
+    decisions.mkdir(mode=0o700)
+
+    def record_decision(record):
+        write_json(decisions / f"{record['round']:06d}.json", record)
+
     browser = Browser(
         headless=args.headless,
         user_data_dir=str(session / "profile"),
@@ -192,8 +258,8 @@ async def start(args):
             file_system_path=str(session / "files"),
             llm_timeout=args.host_timeout + 60,
             step_timeout=args.host_timeout + 180,
-            max_context_chars=120000,
             enable_signal_handler=False,
+            decision_sink=record_decision,
         )
         run_task = asyncio.create_task(agent.run(max_steps=args.max_steps))
 
@@ -234,7 +300,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     config = sub.add_parser("configure", help="Save a credential file path, never the key itself")
     config.add_argument("--jev-env", type=Path, required=True)
-    for name in ["start", "status", "request", "respond", "cancel"]:
+    for name in ["start", "status", "wait", "request", "respond", "cancel"]:
         command = sub.add_parser(name)
         command.add_argument("--session-dir", type=Path, required=True)
         if name == "start":
@@ -246,6 +312,8 @@ def main():
             command.add_argument("--extensions", action="store_true")
         if name in {"request", "respond"}:
             command.add_argument("--id", required=True)
+        if name in {"wait", "respond"}:
+            command.add_argument("--wait", type=float, default=30 if name == "wait" else 0)
         if name == "respond":
             command.add_argument("--file", type=Path, required=True)
     args = parser.parse_args()
@@ -266,13 +334,22 @@ def main():
         os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
         os.environ.setdefault("BROWSER_USE_CLOUD_SYNC", "false")
         asyncio.run(start(args))
+    elif args.command == "wait":
+        if not 0 <= args.wait <= 60:
+            parser.error("wait must be between 0 and 60 seconds")
+        print(json.dumps(wait_for_request(args.session_dir, args.wait), ensure_ascii=False))
     elif args.command == "status":
         print(json.dumps(status(args.session_dir), ensure_ascii=False, indent=2))
     elif args.command == "request":
         print(request_path(args.session_dir, args.id).read_text())
     elif args.command == "respond":
+        if not 0 <= args.wait <= 60:
+            parser.error("wait must be between 0 and 60 seconds")
         respond(args.session_dir, args.id, json.loads(args.file.read_text()))
-        print("Response submitted")
+        if args.wait:
+            print(json.dumps(wait_for_request(args.session_dir, args.wait), ensure_ascii=False))
+        else:
+            print("Response submitted")
     elif args.command == "cancel":
         (args.session_dir / "cancel").touch(mode=0o600)
         print("Cancellation requested")

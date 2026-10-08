@@ -7,6 +7,10 @@ os.environ["ANONYMIZED_TELEMETRY"] = "false"
 os.environ["BROWSER_USE_CLOUD_SYNC"] = "false"
 os.environ["BROWSER_USE_CONFIG_DIR"] = tempfile.mkdtemp(prefix="buwj-tests-")
 
+from browser_use_with_jev.runtime import check_browser_runtime
+
+check_browser_runtime()
+
 import pytest  # noqa: E402
 from browser_use.browser.views import BrowserStateSummary, TabInfo  # noqa: E402
 

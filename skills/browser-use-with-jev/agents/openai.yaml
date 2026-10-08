@@ -1,4 +1,4 @@
 interface:
   display_name: "Browser Use with Jev"
-  short_description: "Run Jev browser tasks with this conversation as host"
-  default_prompt: "Use $browser-use-with-jev for this browser task and verify the result."
+  short_description: "Use Jev in the Codex sidebar or standalone Browser Use"
+  default_prompt: "Use $browser-use-with-jev in the visible Codex sidebar for this browser task and verify the result."

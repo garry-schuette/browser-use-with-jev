@@ -13,6 +13,9 @@ jobs:
       BROWSER_USE_CLOUD_SYNC: 'false'
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python }}
@@ -20,4 +23,5 @@ jobs:
       - run: uv run ruff check src tests examples scripts skills
       - run: uv run ruff format --check src tests examples scripts skills
       - run: uv run pytest -q
+      - run: node --test tests/sidebar.test.mjs tests/sidebar-worker.test.mjs
       - run: uv build

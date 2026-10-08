@@ -31,6 +31,7 @@ async def test_request_keeps_key_out_of_body_and_validates_response():
     client = JevClient("fake-private-key", transport=httpx.MockTransport(handler))
     decision = await client.choose({"page": "public fixture"}, {"a": "Click", "HOST": "Host"})
     assert decision.choice == "a"
+    assert decision.probabilities == {"a": 0.9, "HOST": 0.1}
     assert "fake-private-key" not in repr(client)
 
 
