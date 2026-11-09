@@ -8,9 +8,36 @@ These are two execution backends, not interchangeable browser objects.
 
 The bundled `sidebar.mjs` adapts the community Jev CUA loop. It accepts an existing
 authorized tab, builds actions from fresh AX observations, asks Jev, rechecks the
-snapshot, then calls the documented CUA tab methods. Codex enters text and handles
-unsupported widgets before resuming the same session. Tab handoff/deliverable
-marks preserve the page across turns; final verification remains with Codex.
+snapshot, then calls the documented CUA tab methods. Codex supplies text: an
+explicit non-secret literal can be executed when Jev chooses the field, while
+other input and unsupported widgets hand off to Codex. The default
+`session.start(task)` entry returns a runner; `runner.wait({timeoutMs:45000})`
+returns either a `status: 'running'` snapshot with metrics/chunks/last event or
+a structured handoff. During each wait, the runner continues across internal
+`run()` step/time chunks without another host-model decision. Browser work pauses
+at a `running` checkpoint and resumes in the next active CUA call; background
+browser calls after a CUA call has returned are unsupported.
+Its default total limit is 120 rounds or 10 minutes, configurable through
+`session.start(task, {maxTotalSteps, maxTotalMs})`; reaching it returns
+`autonomy_limit`. CUA calls use a 60000 ms timeout;
+the host can call `wait` again on the same runner while it works, or call
+`session.cancel()` to stop future actions. Errors at the runner boundary return
+safe structured results with status and handoff reason, including when an action
+may already have executed. An optional `verify` callback checks fresh AX
+evidence at VERIFY and may finish the runner when accepted; visual verification
+still belongs to Codex. `runCompact` can check
+fresh host-defined AX evidence in the same CUA call as the Jev loop. `runPlan`
+continues across bounded stages only after each fresh verdict is accepted. Tab
+handoff/deliverable marks preserve the page across turns; final verification
+remains with Codex.
+
+The runner counts only handoffs actually returned to Codex; internal step/time
+continuations are tracked separately. Jev can choose VERIFY, HOST or WAIT when
+the page has no remaining action candidates. To bound long sessions without
+discarding task constraints, each request carries the full goal and current AX
+state plus the latest 12 history entries and counts for older events; the full
+history remains in the private session log. Background runs check `ready` once
+at startup, then use each action's `expect` condition for later page transitions.
 
 `sidebar-client.mjs` supports the existing project config and the community config
 as a fallback only when the project config is absent. Direct API requests run in
@@ -65,6 +92,11 @@ bounded by an exact dependency pin and contract tests.
    next step to the host for recovery instead of blindly retrying it.
 6. Host handoff invokes the original `get_model_output` with the full messages,
    screenshots and output schema. The host can use all registered upstream tools.
+
+The Python adapter no longer forces a host review every 12 Jev actions by
+default. `host_every` can still request a positive periodic interval. Unexpected
+candidate, provider, selection or validation errors route to a safe `jev_error`
+handoff; raw exception text is not passed to the host or decision trace.
 
 Jev context v2 reuses the current redacted upstream state message once. This
 message already contains the task, history/compacted memory, todo, plan, read-once

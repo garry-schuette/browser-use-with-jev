@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Jev automatic loop test</title>
+  </head>
+  <body>
+    <main>
+      <h1>Find a hotel</h1>
+      <button id="open-filters" type="button">Open filters</button>
+
+      <section id="filters" aria-labelledby="filters-heading" hidden>
+        <h2 id="filters-heading">Filters</h2>
+        <label for="query">Query</label>
+        <input id="query" name="query" type="search" autocomplete="off">
+        <button id="apply-filters" type="button">Apply filters</button>
+      </section>
+
+      <p id="status" role="status" aria-live="polite"></p>
+
+      <section id="results" aria-labelledby="results-heading" hidden>
+        <h2 id="results-heading">Hotel results</h2>
+        <article id="hotel-harbor" aria-labelledby="harbor-heading">
+          <h3 id="harbor-heading">Harbor Hotel</h3>
+          <p>City center, 2 km from the coast.</p>
+          <button type="button" data-hotel="harbor">View details</button>
+        </article>
+        <article id="hotel-coast" aria-labelledby="coast-heading">
+          <h3 id="coast-heading">Coast Hotel</h3>
+          <p>Beachfront rooms with ocean views.</p>
+          <button type="button" data-hotel="coast">View details</button>
+        </article>
+      </section>
+
+      <p id="completion" role="alert" hidden></p>
+    </main>
+
+    <script>
+      const openFilters = document.getElementById('open-filters');
+      const filters = document.getElementById('filters');
+      const query = document.getElementById('query');
+      const applyFilters = document.getElementById('apply-filters');
+      const results = document.getElementById('results');
+      const status = document.getElementById('status');
+      const completion = document.getElementById('completion');
+
+      openFilters.addEventListener('click', () => {
+        openFilters.disabled = true;
+        status.textContent = 'Opening filters…';
+        window.setTimeout(() => {
+          filters.hidden = false;
+          openFilters.disabled = false;
+          status.textContent = 'Filters are ready.';
+        }, 320);
+      });
+
+      applyFilters.addEventListener('click', () => {
+        if (!query.value.trim()) {
+          status.textContent = 'Enter a query before applying filters.';
+          query.focus();
+          return;
+        }
+        applyFilters.disabled = true;
+        results.hidden = true;
+        completion.hidden = true;
+        completion.textContent = '';
+        status.textContent = 'Searching hotels…';
+        window.setTimeout(() => {
+          results.hidden = false;
+          applyFilters.disabled = false;
+          status.textContent = 'Two hotel results found.';
+        }, 320);
+      });
+
+      results.addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-hotel]');
+        if (!button) return;
+        const hotel = button.dataset.hotel;
+        completion.textContent = hotel === 'coast'
+          ? 'Completed: Coast Hotel details opened.'
+          : 'Harbor Hotel details opened.';
+        completion.hidden = false;
+      });
+    </script>
+  </body>
+</html>

@@ -54,7 +54,7 @@ class JevAgent(Agent):
         min_confidence: float = 0.65,
         max_candidates: int = 128,
         max_context_chars: int = 40000,
-        host_every: int = 12,
+        host_every: int | None = None,
         jev_on_error: str = "handoff",
         allow_candidate: Callable[[Candidate], bool] | None = None,
         candidate_provider: Callable | None = None,
@@ -63,7 +63,10 @@ class JevAgent(Agent):
     ):
         if not 0 <= min_confidence <= 1 or max_candidates < 1 or max_context_chars < 1:
             raise ValueError("Invalid Jev routing limits")
-        if host_every < 1 or jev_on_error not in {"handoff", "raise"}:
+        if (host_every is not None and host_every < 1) or jev_on_error not in {
+            "handoff",
+            "raise",
+        }:
             raise ValueError("Invalid host handoff settings")
         if kwargs.get("llm") is None and len(args) < 2:
             raise ValueError("Supply llm explicitly (a Browser Use model or HostModel callback)")
@@ -102,7 +105,12 @@ class JevAgent(Agent):
     def _trace(self, **values):
         self._decision_record.update(values)
         if self.decision_sink:
-            self.decision_sink(dict(self._decision_record))
+            try:
+                self.decision_sink(dict(self._decision_record))
+            except Exception:
+                # A failed trace sink must not interrupt routing or expose its
+                # exception (which may contain credentials or page content).
+                self.logger.warning("Jev decision trace sink failed")
 
     async def _host(self, messages, reason):
         self._trace(outcome="host", handoff_reason=reason)
@@ -258,63 +266,64 @@ class JevAgent(Agent):
             "max_candidates": self.max_candidates,
         }
         self._trace(outcome="routing")
-        page = self._jev_page
-        if page is None or self.AgentOutput is self.DoneAgentOutput:
-            return await self._host(input_messages, "upstream_required")
-        if self.state.last_result and any(r.error for r in self.state.last_result):
-            return await self._host(input_messages, "action_recovery")
-        if self._jev_streak >= self.host_every:
-            return await self._host(input_messages, "periodic_review")
-        if page.state_error:
-            return await self._host(input_messages, "observation_error")
-        if not page.url or page.url == "about:blank":
-            return await self._host(input_messages, "navigation_required")
-        if self._last_jev_action is not None:
-            last_fingerprint, _ = self._last_jev_action
-            if fingerprint(page) == last_fingerprint:
-                self._last_jev_action = None
-                return await self._host(input_messages, "no_progress")
-            self._last_jev_action = None
-        options = candidates(page, self.ActionModel)
-        if self.candidate_provider:
-            extra = list(self.candidate_provider(page, self.ActionModel))
-            for candidate in extra:
-                if not isinstance(candidate, Candidate) or candidate.action is None:
-                    raise ValueError("Custom candidates must be concrete Candidate actions")
-                if len(candidate.action) != 1 or "done" in candidate.action:
-                    raise ValueError(
-                        "Candidates require one action; completion belongs to the host"
-                    )
-                self.ActionModel.model_validate(candidate.action)
-            options.extend(extra)
-        if self.allow_candidate:
-            options = [c for c in options if self.allow_candidate(c)]
-        self._trace(
-            candidate_count=len(options),
-            candidates={f"a{i}": asdict(c) for i, c in enumerate(options)},
-        )
-        if not options:
-            return await self._host(input_messages, "candidate_limit")
-        before = fingerprint(page)
-        previous = self.state.last_model_output
-        context = decision_context(
-            messages=input_messages,
-            system_text=self._jev_system_text,
-            system_extension=self._jev_system_extension,
-            state_message=self._message_manager.state.history.state_message,
-            task=self.task,
-            page=page,
-            previous=previous,
-            plan=self.state.plan,
-            results=self.state.last_result,
-        )
-        self._trace(
-            context_source=context["source"],
-            input_text_chars=sum(len(m.text) for m in input_messages),
-            context_chars=len(json.dumps(context, ensure_ascii=False)),
-            max_context_chars=self.max_context_chars,
-        )
+        handoff_reason = None
         try:
+            page = self._jev_page
+            if page is None or self.AgentOutput is self.DoneAgentOutput:
+                raise Handoff("upstream_required")
+            if self.state.last_result and any(r.error for r in self.state.last_result):
+                raise Handoff("action_recovery")
+            if self.host_every is not None and self._jev_streak >= self.host_every:
+                raise Handoff("periodic_review")
+            if page.state_error:
+                raise Handoff("observation_error")
+            if not page.url or page.url == "about:blank":
+                raise Handoff("navigation_required")
+            if self._last_jev_action is not None:
+                last_fingerprint, _ = self._last_jev_action
+                if fingerprint(page) == last_fingerprint:
+                    self._last_jev_action = None
+                    raise Handoff("no_progress")
+                self._last_jev_action = None
+            options = candidates(page, self.ActionModel)
+            if self.candidate_provider:
+                extra = list(self.candidate_provider(page, self.ActionModel))
+                for candidate in extra:
+                    if not isinstance(candidate, Candidate) or candidate.action is None:
+                        raise ValueError("Custom candidates must be concrete Candidate actions")
+                    if len(candidate.action) != 1 or "done" in candidate.action:
+                        raise ValueError(
+                            "Candidates require one action; completion belongs to the host"
+                        )
+                    self.ActionModel.model_validate(candidate.action)
+                options.extend(extra)
+            if self.allow_candidate:
+                options = [c for c in options if self.allow_candidate(c)]
+            self._trace(
+                candidate_count=len(options),
+                candidates={f"a{i}": asdict(c) for i, c in enumerate(options)},
+            )
+            if not options:
+                raise Handoff("candidate_limit")
+            before = fingerprint(page)
+            previous = self.state.last_model_output
+            context = decision_context(
+                messages=input_messages,
+                system_text=self._jev_system_text,
+                system_extension=self._jev_system_extension,
+                state_message=self._message_manager.state.history.state_message,
+                task=self.task,
+                page=page,
+                previous=previous,
+                plan=self.state.plan,
+                results=self.state.last_result,
+            )
+            self._trace(
+                context_source=context["source"],
+                input_text_chars=sum(len(m.text) for m in input_messages),
+                context_chars=len(json.dumps(context, ensure_ascii=False)),
+                max_context_chars=self.max_context_chars,
+            )
             # Reference only nodes present in both the typed current DOM and the
             # actual Jev context. Unknown/custom-only labels stay in group questions.
             pattern = r"(?m)^[ \t]*\*?\[(\d+)\]<"
@@ -324,21 +333,38 @@ class JevAgent(Agent):
                 context_text += "\n" + context["dom"]
             present = {int(i) for i in re.findall(pattern, context_text)}
             option = await self._select(options, context, before, observed & present)
+            if option.action is None:
+                raise Handoff(option.reason)
+            await self._fresh(before)
+            output = self.AgentOutput.model_validate(
+                {
+                    "evaluation_previous_goal": "Not evaluated by Jev; inspect action results.",
+                    "memory": previous.memory if previous else "",
+                    "next_goal": "Inspect the result of the selected action and continue the task.",
+                    "action": [option.action],
+                }
+            )
+            self._trace(outcome="action_returned", action=option.action)
+            self._last_jev_action = (before, option.action)
+            self.routing.jev_actions += 1
+            self._jev_streak += 1
+            return output
         except Handoff as handoff:
-            return await self._host(input_messages, str(handoff))
-        if option.action is None:
-            return await self._host(input_messages, option.reason)
-        await self._fresh(before)
-        output = self.AgentOutput.model_validate(
-            {
-                "evaluation_previous_goal": "Not evaluated by Jev; inspect action results.",
-                "memory": previous.memory if previous else "",
-                "next_goal": "Inspect the result of the selected action and continue the task.",
-                "action": [option.action],
-            }
-        )
-        self._trace(outcome="action_returned", action=option.action)
-        self._last_jev_action = (before, option.action)
-        self.routing.jev_actions += 1
-        self._jev_streak += 1
-        return output
+            handoff_reason = str(handoff)
+        except StaleDecision:
+            raise
+        except JevError:
+            if self.jev_on_error == "raise":
+                raise
+            self.routing.jev_errors += 1
+            self._trace(outcome="jev_error")
+            handoff_reason = "jev_error"
+        except Exception:
+            # Provider adapters, candidate hooks and serialization can all fail.
+            # Never include the exception or its traceback in the handoff trace.
+            self.routing.jev_errors += 1
+            self._trace(outcome="jev_error")
+            handoff_reason = "jev_error"
+        # Run the host outside the exception handler: if it fails, an earlier Jev
+        # exception cannot be chained to the host error and leak sensitive text.
+        return await self._host(input_messages, handoff_reason)

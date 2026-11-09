@@ -70,8 +70,9 @@ and IDs in that fixture are synthetic.
 Explicit host selectors now support roles, node IDs/indices and ancestor scopes,
 with exactly one match required. Special click roles require explicit opt-in;
 discovery remains conservative. Nested duplicate candidates have distinct model
-labels. Fresh-state checks still prevent stale target execution. Empty action
-lists produce `no_action_candidates` with exclusion reasons and zero Jev calls.
+labels. Fresh-state checks still prevent stale target execution. At the time of
+this 2026-09-23 check, empty action lists produced `no_action_candidates`; the
+later autonomous runner now lets Jev choose VERIFY, HOST or WAIT in that state.
 
 Version-2 private logs include each candidate round, exclusions, state summary,
 request dispatch/valid-response flags, decisions, execution outcomes, run
@@ -96,3 +97,41 @@ in this change. Live acceptance still requires actual Jev execution, fresh page
 verification of the user's dates and Beijing University location, and a saved
 log covering every host action. `apiSuccessRate` measures valid responses per
 transport dispatch; `browserTaskVerified` requires recorded host acceptance.
+
+## Autonomous runner verification (2026-10-09)
+
+The new `session.start(task)` entry was tested through the real Codex CUA tab and
+configured TypeSafe Jev provider on local, non-network-submitting fixtures. The
+CUA runtime could not resolve the provider; the bounded synthetic preflight
+reached it with normal host network permissions, then the local API worker
+forwarded only Jev requests. The first CUA attempt made one DNS-failed request
+and no browser action. No provider or credential setting was changed.
+
+In the greeting fixture, Jev selected a host-supplied text field, checkbox and
+button, then VERIFY. The fresh AX verdict and a separate CUA observation showed
+`Codex Autonomous`, a checked checkbox, and `Hello, Codex Autonomous!`.
+That successful run made four Jev decisions, executed three actions across four
+internal chunks, and needed no intermediate Codex action.
+
+The new [autoloop fixture](../examples/fixtures/autoloop.html) exercises an
+asynchronous filter panel, a host-supplied search value, asynchronous results,
+and two `View details` buttons distinguished by a stable card ancestor. The first
+live attempt handed off after opening filters because CUA called the input a
+`search text field`, which the parser did not recognize. After adding that AX
+role, the full rerun reached fresh verification: five Jev decisions, four
+executed actions, four internal continuations, one accepted verification, and
+**zero external handoffs**. A separate fresh CUA observation showed Query =
+`Coast` and `Completed: Coast Hotel details opened.` The local fixture does not
+establish success rates on arbitrary websites.
+
+Offline tests cover the same multi-chunk pattern plus transport retry, stale
+state, observation and verification errors, bounded history, wait timeout,
+concurrent-call rejection, and first-chunk readiness. Run
+`node --test tests/sidebar.test.mjs tests/sidebar-autoloop.test.mjs tests/sidebar-worker.test.mjs`.
+
+A cross-call CUA probe found that letting browser work continue after a
+`runner.wait()` returned caused the next observation to fail. The runner now
+pauses at a `running` checkpoint and resumes inside the next `wait()` call.
+A second cross-call probe returned `running` with zero requests on a short wait,
+then resumed in a new CUA call and reached accepted verification. This is a CUA
+runtime constraint, not a Jev handoff per action.

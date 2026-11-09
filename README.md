@@ -118,6 +118,19 @@ for you. Existing Jev configuration is reused. If the CUA runtime cannot reach
 the API, an optional locally authorized Node worker handles only Jev requests.
 You do not need to run workers or write model replies yourself.
 
+The default sidebar entry is `const runner = session.start(task)` followed by
+`await runner.wait({timeoutMs:45000})` in Codex's CUA runtime. Jev continues its
+observe, decide and act loop across internal chunks without a Codex turn per
+action. If a wait returns `status: 'running'`, Codex calls `runner.wait()` again
+using the same binding; browser work pauses between waits because CUA actions
+require an active tool call. Each CUA call uses a 60000 ms tool timeout. The runner
+defaults to 120 total rounds and 10 minutes; `session.start(task,
+{maxTotalSteps, maxTotalMs})` can set other finite limits. A reached total limit
+returns `autonomy_limit`. HOST, VERIFY, input, uncertainty, and errors return
+structured handoffs. A `verify` callback can check fresh AX evidence at VERIFY;
+visual claims still need Codex inspection. Codex can stop future actions with
+`session.cancel()`; an in-flight action cannot be undone.
+
 For DNS failures, the [sidebar troubleshooting workflow](skills/browser-use-with-jev/references/sidebar.md#optional-local-api-worker)
 uses `node skills/browser-use-with-jev/sidebar-check.mjs` with normally approved
 network access before launching the worker. This makes one synthetic API request;
@@ -129,7 +142,11 @@ the Python request/respond bridge. Browser profiles do not automatically inherit
 your usual Chrome logins. Keep the task active until completion in either mode.
 
 Sidebar mode supports clicks, toggles, scrolling, safe keys, back/reload and input
-handoffs. Complex widgets, uploads and extraction stay with Codex. It does not
+handoffs. For known non-secret text, Codex can pre-supply a value and the helper
+enters it after Jev selects the field. `runCompact` supports a fresh, host-defined
+verification in the same CUA call and avoids returning the full trace on every
+handoff. `runPlan` can advance through at most eight host-verified stages in one
+call. Complex widgets, uploads and extraction stay with Codex. It does not
 inherit Python Browser Use's tool registry, memory compression or hierarchical
 candidate router. Oversized candidate pools/context hand back to Codex.
 
@@ -184,7 +201,7 @@ flowchart TD
 | --- | --- |
 | Clicks, checkbox/radio controls | Jev selects observed indexed targets |
 | Page/container scrolling, back, wait, tab switching | Jev selects code-built parameters |
-| Text input | Jev can select a field; the host generates and enters text |
+| Text input | Jev selects a field; the host supplies text, either ahead of time or at handoff |
 | Dropdowns | Jev can request options; host selects by default, extensible with candidates |
 | Planning, extraction, uploads, files, visual reasoning | Original Browser Use host/tool path |
 | Custom tools | Original registry remains available; bounded candidates can extend Jev routing |
@@ -342,7 +359,7 @@ configuration for application-wide restrictions.
 | `min_confidence` | `0.65` | Lower confidence hands back to the host |
 | `max_candidates` | `128` | Maximum choices per question, including HOST/VERIFY; larger pools use operation/target groups |
 | `max_context_chars` | `40000` | Larger complete request bodies (including candidates) hand back |
-| `host_every` | `12` | Periodic host review after consecutive Jev selections |
+| `host_every` | `None` | No forced periodic review; set a positive integer to request one after that many consecutive Jev selections |
 | `jev_on_error` | `"handoff"` | Record an API failure and use the host; `"raise"` disables this |
 
 Small candidate pools use a single choice question. Larger pools select an operation

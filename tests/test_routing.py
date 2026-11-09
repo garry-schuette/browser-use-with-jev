@@ -158,8 +158,20 @@ async def test_custom_upstream_tool_survives_host_handoff(agent):
     assert result.extracted_content == "7"
 
 
-async def test_periodic_review_and_candidate_limit_keep_host_capabilities(agent):
+async def test_default_jev_streak_has_no_periodic_review(agent):
     instance, host = agent
+    assert instance.host_every is None
+    instance._jev_streak = 100
+    output = await instance.get_model_output([])
+    assert output.action[0].model_dump(exclude_none=True) == {"click": {"index": 1}}
+    assert instance.routing.jev_actions == 1
+    assert "periodic_review" not in instance.routing.handoffs
+    host.assert_not_called()
+
+
+async def test_explicit_periodic_review_and_candidate_limit_keep_host_capabilities(agent):
+    instance, host = agent
+    instance.host_every = 12
     instance._jev_streak = instance.host_every
     await instance.get_model_output([])
     assert instance.routing.handoffs["periodic_review"] == 1
@@ -220,9 +232,46 @@ async def test_custom_candidate_cannot_bypass_host_completion(agent):
 
     instance, host = agent
     instance.candidate_provider = lambda p, s: [Candidate("done", {"done": {"text": "unverified"}})]
-    with pytest.raises(ValueError, match="completion belongs"):
-        await instance.get_model_output([])
+    await instance.get_model_output([])
     instance.jev.choose.assert_not_called()
+    assert instance.routing.handoffs == {"jev_error": 1}
+    host.assert_awaited_once()
+
+
+@pytest.mark.parametrize("source", ["provider", "selection", "request"])
+async def test_unexpected_jev_routing_errors_handoff_without_exposing_details(agent, source):
+    instance, host = agent
+    secret = "private-provider-token"
+    records = []
+    instance.decision_sink = records.append
+    if source == "provider":
+
+        def fail_provider(page, schema):
+            raise RuntimeError(secret)
+
+        instance.candidate_provider = fail_provider
+    elif source == "selection":
+        instance.jev.choose.side_effect = RuntimeError(secret)
+    else:
+        instance.jev.build_questions_request = lambda state, questions: (_ for _ in ()).throw(
+            RuntimeError(secret)
+        )
+    await instance.get_model_output([])
+    assert instance.routing.jev_errors == 1
+    assert instance.routing.handoffs == {"jev_error": 1}
+    assert instance.routing.jev_actions == 0
+    assert secret not in str(records)
+    assert secret not in str(host.call_args)
+    host.assert_awaited_once()
+
+
+async def test_failing_decision_sink_does_not_interrupt_jev(agent):
+    instance, host = agent
+    instance.decision_sink = lambda record: (_ for _ in ()).throw(RuntimeError("secret"))
+    output = await instance.get_model_output([])
+    assert output.action[0].model_dump(exclude_none=True) == {"click": {"index": 1}}
+    assert instance.routing.jev_errors == 0
+    host.assert_not_called()
 
 
 @pytest.mark.parametrize("choice", ["HOST", "VERIFY"])

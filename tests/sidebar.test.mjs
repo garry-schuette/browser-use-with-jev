@@ -29,6 +29,7 @@ function fakeTab(initial = state) {
   return { id: 'fixture-tab', state: initial, clicks: [], keys: [], marks: [], reads: 0,
     async getAXState() { this.reads++; return this.state; },
     async click(index) { this.clicks.push(index); this.state += `\n${10 + this.clicks.length} text Result ${this.clicks.length}`; },
+    async setValue(index, value) { this.values ??= []; this.values.push([index, value]); this.state += `\n20 text Entered ${value}`; },
     async pressKey(key) { this.keys.push(key); },
     async scroll(...args) { this.scrollArgs = args; },
     async reload() { this.reloaded = true; },
@@ -106,6 +107,12 @@ test('current AX names support IDs, values and text labels adjacent to inputs', 
   ]);
 });
 
+test('search text fields are recognized as input targets', () => {
+  const search = `${header}\n10 search text field (settable) Query, ID: query`;
+  assert.deepEqual(availableActions(search, [{ op: 'input', name: 'Query' }])
+    .map(action => [action.op, action.index, action.identity.role]), [['input', 10, 'textfield']]);
+});
+
 test('duplicate and disabled controls are excluded; explicit controls respect reserved names', () => {
   const duplicates = `${state}\n5 button Show greeting, ID: another\n6 button (disabled) Delete`;
   assert.equal(discoverActions(duplicates, { click: true }).some(action => ['Show greeting', 'Delete'].includes(action.name)), false);
@@ -129,6 +136,83 @@ test('input handoff resumes the same history after Codex enters text', async () 
   assert.equal(second.sessionMetrics.hostActions, 1);
   assert.equal(second.sessionMetrics.executedActions, 1);
   assert.equal(bodies[1].state.history.some(item => item.actor === 'host'), true);
+});
+
+test('host-supplied text executes after Jev selects an exact field without entering action traces', async () => {
+  const tab = fakeTab();
+  const bodies = fakeDecisions(['a0']);
+  const session = createSession(tab, await config());
+  const result = await session.run({ ...task, policy: {}, maxSteps: 1,
+    controls: [{ op: 'input', name: 'Name', value: 'AgentBench-2026' }] });
+  assert.equal(result.handoff, 'step_limit');
+  assert.deepEqual(tab.values, [[2, 'AgentBench-2026']]);
+  assert.equal(result.sessionMetrics.executedActions, 1);
+  assert.equal(JSON.stringify(bodies[0]).includes('AgentBench-2026'), false);
+  const path = join(await temp(), 'buffered-input.json');
+  await session.saveLog(path);
+  assert.equal((await readFile(path, 'utf8')).includes('AgentBench-2026'), false);
+});
+
+test('compact run can make a fresh independent verification without returning the full trace', async () => {
+  const tab = fakeTab(); fakeDecisions(['VERIFY']);
+  const session = createSession(tab, await config());
+  const result = await session.runCompact(task, { verify: fresh => ({
+    accepted: fresh.includes('Show greeting'), reason: 'Fresh control check', evidence: fresh,
+  }) });
+  assert.equal(result.status, 'verified');
+  assert.equal(result.sessionMetrics.browserTaskVerified, true);
+  assert.equal(tab.reads, 4);
+  assert.equal('history' in result, false);
+  assert.equal('rounds' in result, false);
+  assert.equal('state' in result, false);
+  const path = join(await temp(), 'compact.json');
+  await session.saveLog(path);
+  assert.equal(JSON.parse(await readFile(path, 'utf8')).status, 'verified');
+});
+
+test('compact verification rejection cannot mark a task verified', async () => {
+  const tab = fakeTab(); fakeDecisions(['VERIFY']);
+  const session = createSession(tab, await config());
+  const result = await session.runCompact(task, { verify: fresh => ({
+    accepted: false, reason: 'Expected result is absent', evidence: fresh,
+  }) });
+  assert.equal(result.status, 'verification_rejected');
+  assert.equal(result.sessionMetrics.browserTaskVerified, false);
+  assert.equal(result.sessionMetrics.verificationRejected, 1);
+});
+
+test('bounded plan builds its next target from fresh state after a verified stage', async () => {
+  const tab = fakeTab(); fakeDecisions(['a0', 'VERIFY', 'a0', 'VERIFY']);
+  const session = createSession(tab, { ...await config(), allowedOrigins: task.allowedOrigins });
+  let observedNext = false;
+  const result = await session.runPlan([
+    { task: { goal: 'Show one greeting', policy: {}, controls: [{ op: 'click', name: 'Show greeting' }] },
+      verify: fresh => ({ accepted: fresh.includes('Result 1'), reason: 'First result visible', evidence: fresh }) },
+    { task: fresh => {
+      observedNext = fresh.includes('Result 1');
+      return { goal: 'Show another greeting', policy: {}, controls: [{ op: 'click', name: 'Show greeting' }] };
+    }, verify: fresh => ({ accepted: fresh.includes('Result 2'), reason: 'Second result visible', evidence: fresh }) },
+  ]);
+  assert.equal(result.status, 'verified');
+  assert.equal(observedNext, true);
+  assert.deepEqual(tab.clicks, [4, 4]);
+  assert.equal(result.steps.length, 2);
+  assert.equal(result.sessionMetrics.verificationAccepted, 2);
+});
+
+test('plan stops before the next stage when fresh verification rejects', async () => {
+  const tab = fakeTab(); fakeDecisions(['VERIFY']);
+  const session = createSession(tab, { ...await config(), allowedOrigins: task.allowedOrigins });
+  let nextStageCalled = false;
+  const result = await session.runPlan([
+    { task, verify: fresh => ({ accepted: false, reason: 'No result yet', evidence: fresh }) },
+    { task: () => { nextStageCalled = true; return task; },
+      verify: fresh => ({ accepted: true, reason: 'Should not run', evidence: fresh }) },
+  ]);
+  assert.equal(result.status, 'verification_rejected');
+  assert.equal(result.failedStep, 0);
+  assert.equal(nextStageCalled, false);
+  assert.equal(result.sessionMetrics.verificationAccepted, 0);
 });
 
 test('stale indices never execute after a decision', async () => {
@@ -241,7 +325,7 @@ test('queue errors from a separately loaded client retain their safe classificat
   const transport = { async request() { throw new SidebarError('dns_error', 'Jev API DNS lookup failed.'); } };
   const result = await createSession(fakeTab(), { ...await config(), transport }).run(task);
   assert.equal(result.handoff, 'dns_error');
-  assert.equal(result.error, 'Jev API DNS lookup failed.');
+  assert.match(result.error, /^Jev API DNS lookup failed\./);
 });
 
 test('same no-effect action is not repeated, while scroll remains visually verifiable', async () => {
@@ -374,16 +458,17 @@ test('missing or ambiguous decision scopes hand back without sending page state'
   assert.equal(bodies.length, 0);
 });
 
-test('empty candidates explain excluded roles and ambiguity without requesting Jev', async () => {
+test('empty candidates explain exclusions while Jev can still choose VERIFY or HOST', async () => {
   const bodies = fakeDecisions([]);
   const result = await createSession(fakeTab(ctrip), await config()).run({ ...task, policy: {}, controls: [
     { op: 'click', name: 'checkIn' }, { op: 'click', name: '入住日期' }, { op: 'click', name: '搜索' },
   ] });
-  assert.equal(result.handoff, 'no_action_candidates');
-  assert.deepEqual(result.excluded.map(item => item.reason), ['unsupported_role', 'unsupported_role', 'ambiguous_target']);
-  assert.equal(bodies.length, 0);
-  assert.equal(result.rounds[0].requestAttempted, false);
-  assert.equal(result.sessionMetrics.decisions, 0);
+  assert.equal(result.handoff, 'verify');
+  assert.deepEqual(result.rounds[0].excluded.map(item => item.reason), ['unsupported_role', 'unsupported_role', 'ambiguous_target']);
+  assert.equal(bodies.length, 1);
+  assert.deepEqual(Object.keys(bodies[0].questions.next.criteria), ['VERIFY', 'HOST', 'WAIT']);
+  assert.equal(result.rounds[0].requestAttempted, true);
+  assert.equal(result.sessionMetrics.executedActions, 0);
 });
 
 test('Ctrip replay executes, rejects premature VERIFY, logs host recovery and validates final evidence', async () => {
@@ -438,6 +523,19 @@ test('expected calendar waits for delayed appearance', async () => {
   assert.equal(result.handoff, 'step_limit');
 });
 
+test('default effect wait covers a control that updates after 1.5 seconds', async () => {
+  const tab = fakeTab(ctrip);
+  tab.click = async index => {
+    tab.clicks.push(index);
+    setTimeout(() => { tab.state += '\n40 container 日历'; }, 1700);
+  };
+  fakeDecisions(['a0']);
+  const result = await createSession(tab, await config()).run({ ...task, policy: {}, maxSteps: 1,
+    waitPollMs: 100, controls: [{ ...ctripControls[0], expect: { includes: ['日历'] } }] });
+  assert.equal(result.history[0].effect, 'matched');
+  assert.equal(result.handoff, 'step_limit');
+});
+
 test('host failures are recorded and invalid verification cannot mark success', async () => {
   const session = createSession(fakeTab(), await config());
   assert.throws(() => session.recordVerification({ accepted: true, reason: 'ok', evidence: state }), /pending VERIFY/);
@@ -448,17 +546,17 @@ test('host failures are recorded and invalid verification cannot mark success', 
 
 test('blocked targets stay excluded across chunks until recorded host recovery', async () => {
   const tab = fakeTab(ctrip); tab.click = async index => { tab.clicks.push(index); };
-  const bodies = fakeDecisions(['a0', 'a0']);
+  const bodies = fakeDecisions(['a0', 'HOST', 'a0']);
   const session = createSession(tab, await config());
   const options = { ...task, policy: {}, controls: [ctripControls[0]], maxSteps: 1 };
   assert.equal((await session.run(options)).handoff, 'no_progress');
   const blocked = await session.run(options);
-  assert.equal(blocked.handoff, 'no_action_candidates');
-  assert.equal(blocked.excluded[0].reason, 'previous_action_blocked');
-  assert.equal(bodies.length, 1);
+  assert.equal(blocked.handoff, 'host');
+  assert.equal(blocked.rounds.at(-1).excluded[0].reason, 'previous_action_blocked');
+  assert.equal(bodies.length, 2);
   await session.hostAction('切换入口并重新观察', async tab => { tab.state += '\n80 text 新入口'; });
   await session.run(options);
-  assert.equal(bodies.length, 2);
+  assert.equal(bodies.length, 3);
 });
 
 test('API metrics separate local rejection, responses and verified browser outcomes', async () => {

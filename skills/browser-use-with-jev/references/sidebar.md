@@ -32,13 +32,50 @@ var task = {
     {op:'click', name:'Notification preferences'}
   ]
 };
-nodeRepl.write(await session.run(task));
+var runner = session.start(task);
+nodeRepl.write(await runner.wait({timeoutMs:45000}));
 ```
 
-Use a 60000 ms tool timeout. Keep bindings across chunks. `maxMs` stops further
-work but cannot interrupt a dispatched CUA action. `session.cancel()` prevents
-future actions; it cannot undo an action. A cancelled session cannot resume.
-Do not cache-bust imports except when testing edited code.
+Use a 60000 ms CUA tool timeout. The 45000 ms `runner.wait()` budget bounds
+browser work in that CUA call. At the checkpoint, the runner pauses without
+losing its tab, task or history. A `status: 'running'` snapshot contains
+`sessionMetrics`, `chunks`, and `lastEvent`. Make another CUA call with the same
+bindings to continue:
+
+```js
+nodeRepl.write(await runner.wait({timeoutMs:45000}));
+```
+
+Within each wait, the runner keeps observing, asking Jev, executing, and
+re-observing across internal `run()` chunks. A task's `maxSteps` and `maxMs` bound one chunk;
+reaching either does not by itself require a Codex turn. By default the runner
+stops at 120 total rounds or 10 minutes with an `autonomy_limit` handoff. You
+can set `session.start(task, {maxTotalSteps, maxTotalMs})` for a bounded task.
+Other handoffs include Jev's
+HOST or VERIFY choice, input requiring Codex, uncertainty, blocked actions,
+origin changes, and errors. Check the returned `status`, `handoff`, and safe
+`error` fields before acting. Runtime errors produce structured results rather
+than an uncaught tool exception. Keep the tab and runner bindings across waits.
+To stop, call `session.cancel()`, then wait for the cancelled result. Cancellation
+prevents future actions but cannot undo a dispatched CUA action. A cancelled
+session cannot resume. Do not cache-bust imports except when testing edited code.
+
+If the task has a concrete AX condition that can be checked without visual
+judgment, provide `verify` at startup. The callback receives a fresh AX state
+only when Jev chooses VERIFY, and its verdict must cover every task requirement:
+
+```js
+var runner = session.start(task, {verify: fresh => ({
+  accepted: fresh.includes('Expected result'),
+  reason: 'Checked the expected result in a fresh AX observation',
+  evidence: fresh,
+})});
+nodeRepl.write(await runner.wait({timeoutMs:45000}));
+```
+
+An accepted verdict can finish the runner without a separate Codex turn. A
+rejected verdict stops for inspection. For visual requirements, Codex must
+inspect a fresh screenshot before accepting.
 
 ## Configuration
 
@@ -57,7 +94,7 @@ standalone continues to use TypeSafe, not OpenRouter.
 
 ## Actions and handoffs
 
-Explicit controls support `click`, `input` (handoff only), `scroll`, `press`,
+Explicit controls support `click`, `input`, `scroll`, `press`,
 `reload`, and `back`. Click/input matches a visible name or `aliases`. Use `role`, `target: {id,
 index, role}` and `within: {name, id, role, index}` to narrow to exactly one
 observed node (all provided fields must match; `within` matches an ancestor).
@@ -87,10 +124,11 @@ controls: [
 ]
 ```
 
-With no candidates, return `no_action_candidates` without calling Jev. Inspect
-`excluded` / `rounds[].excluded` for `unsupported_role`, `ambiguous_target`,
-`target_not_found`, disabled/reserved targets and prior blocked actions.
-Each round retains its candidate identities, exclusion reasons and state summary.
+When no action candidates remain, Jev still chooses among VERIFY, HOST, and WAIT.
+This lets a completed page reach verification without inventing a fallback action.
+Inspect `rounds[].excluded` for `unsupported_role`, `ambiguous_target`,
+`target_not_found`, disabled/reserved targets and prior blocked actions. Each
+round retains its candidate identities, exclusion reasons and state summary.
 
 For broader authorized navigation, opt into discovery using `policy`:
 
@@ -127,7 +165,53 @@ authorized text, observe again, and resume the same session:
 // Use the fresh index in the real handoff; 5 is only an example.
 await session.hostAction('Entered the requested value in the named field.',
   tab => tab.setValue(5, 'User-authorized text'));
-nodeRepl.write(await session.run(task));
+var runner = session.start(task);
+nodeRepl.write(await runner.wait({timeoutMs:45000}));
+```
+
+For a known, non-secret value, Codex may provide the exact string on an explicit
+`input` control. Jev selects the observed field, and the helper calls `setValue`
+without another host-model turn. The literal is not embedded in Jev candidate
+labels or action records. Later page observations and verification evidence may
+display it, so keep credentials and other sensitive strings in the ordinary
+host handoff.
+
+```js
+controls: [{op:'input', name:'Search', value:'user-requested search text'}]
+```
+
+For a check that Codex can specify before the run, `runCompact` gets a new AX
+observation only after Jev requests VERIFY. Return a verdict based on all task
+requirements; the callback cannot treat VERIFY itself as success. It retains
+the full private trace in the session and returns a compact status. Use the
+background `start`/`wait` entry for ordinary tasks, and `session.run` for
+manual investigation of a single chunk.
+
+```js
+nodeRepl.write(await session.runCompact(task, {verify: fresh => ({
+  accepted: fresh.includes('Expected result'),
+  reason: 'Checked the expected result in a fresh AX observation',
+  evidence: fresh,
+})}));
+```
+
+For visual requirements, inspect a fresh screenshot before accepting. A rejected
+verdict remains available in the private trace and the same session can resume.
+
+For a bounded multi-stage task, use `runPlan` to keep verified stages in one CUA
+call. Each stage has a task (or a function that builds one from a fresh AX state)
+and a host-defined `verify` callback as above. The next stage runs only after
+the preceding stage is accepted. The plan has at most eight stages, stays within
+the session's authorized origins, and stops on any rejection or handoff. For
+example, a count can be checked before a later stage chooses one of several
+same-name controls from the new state. Full evidence stays in `saveLog`.
+
+```js
+nodeRepl.write(await session.runPlan([
+  {task: firstTask, verify: fresh => checkFirstStage(fresh)},
+  {task: fresh => buildSecondTask(fresh),
+   verify: fresh => checkSecondStage(fresh)},
+]));
 ```
 
 Wrap **every** host navigation, input and click in `session.hostAction(note,
@@ -153,7 +237,9 @@ session. These are host actions, not automatic Browser Use tools.
   is 40000 characters. Excess hands back without truncation.
 - `low_confidence`, `no_progress`, `loading_timeout`, `action_error`, `blocked`:
   inspect state before continuing. A failed action may already have had effects.
-- `budget` / `step_limit`: continue a bounded chunk if progress warrants it.
+- `budget` / `step_limit`: the background runner continues across a single
+  chunk's limit. Its total safety limit returns `autonomy_limit` for Codex
+  inspection.
 - `decision_error`: inspect the safe error. Only transport errors retry, once
   by default. Auth/schema errors never retry or change provider automatically.
 - `dns_error`: the runtime could not resolve the configured API hostname. Do
@@ -164,9 +250,10 @@ session. These are host actions, not automatic Browser Use tools.
 
 `waitForState(tab,{allowedOrigins,includes,excludes})` checks loading without model
 calls and returns `matched`, `timeout`, or `blocked`. Task `ready:{includes,
-excludes}` checks readiness before Jev; each explicit action's `expect:{includes,
+excludes}` checks readiness before Jev on the first chunk of a background runner;
+each explicit action's `expect:{includes,
 excludes}` waits for the expected effect after dispatch (for example an opened
-calendar). `effectTimeoutMs` defaults to 1500 ms, bounded to 10000 ms and the
+calendar). `effectTimeoutMs` defaults to 4000 ms, bounded to 10000 ms and the
 remaining chunk budget. Missing readiness/effects return `form_not_ready` /
 `expected_effect_missing`. A click without any AX change immediately hands back
 as `no_progress`; visual-only changes need host inspection.
@@ -229,8 +316,9 @@ var session = jev.createSession(taskTab, {
 });
 ```
 
-If a session already exists, `session.run({...task,transport})` preserves its
-history. Worker and CUA provider/model must match. The worker reads saved config,
+If a session already exists, start a runner with the same session and the
+configured `transport`; history is preserved. Worker and CUA provider/model must
+match. The worker reads saved config,
 never page-supplied credential paths or endpoints. For differing explicit
 per-task config, use direct mode or deliberately configure the intended provider.
 
