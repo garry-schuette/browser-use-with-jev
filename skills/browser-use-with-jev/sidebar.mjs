@@ -243,7 +243,7 @@ export function createSession(tab, defaults = {}) {
   let elapsedMs = 0;
   let lastStatus = null;
   let running = false;
-  let cancelled = false;
+  let sessionCancelled = false;
   let controller;
   const handoffs = {};
   const rounds = [];
@@ -253,7 +253,12 @@ export function createSession(tab, defaults = {}) {
   let pendingHandoff = null;
   let activeRunner = null;
   let activeRunnerToken = null;
+  let activeRunnerSignal = null;
   let operationToken = null;
+  function checkCancellation() {
+    if (sessionCancelled || activeRunnerSignal?.aborted)
+      throw new SidebarError('cancelled', 'Jev operation was cancelled');
+  }
   function decisionHistory() {
     const items = history.map(({ stateAfter, evidence, ...item }) => item);
     if (items.length <= 12) return items;
@@ -267,7 +272,7 @@ export function createSession(tab, defaults = {}) {
   }
   function safeFailure(stage, error) {
     const handoff = errorCode(error, `${stage}_error`);
-    const result = { status: 'blocked', handoff,
+    const result = { status: handoff === 'cancelled' ? 'cancelled' : 'blocked', handoff,
       error: errorText(handoff) };
     lastStatus = result.status;
     pendingHandoff = handoff;
@@ -303,7 +308,7 @@ export function createSession(tab, defaults = {}) {
   return {
     metrics,
     history: () => clone(history),
-    cancel() { cancelled = true; controller?.abort(); },
+    cancel() { sessionCancelled = true; controller?.abort(); },
     recordHostAction(note) {
       if (running || activeRunner || operationToken) throw new SidebarError('session_busy', 'Wait for the Jev runner before recording a host action');
       if (typeof note !== 'string' || !note || note.length > 2000) throw new SidebarError('contract_error', 'Invalid host action note');
@@ -414,11 +419,15 @@ export function createSession(tab, defaults = {}) {
           if (!handoffs.verify) delete handoffs.verify;
           if (outcomes.at(-1)) outcomes.at(-1).internalVerification = true;
           try {
+            checkCancellation();
             const freshState = await tab.getAXState({ emit: false, disableDiffing: true });
+            checkCancellation();
             checkState(freshState, task.allowedOrigins ?? defaults.allowedOrigins);
             const verdict = await verify(freshState);
+            checkCancellation();
             if (verdict?.accepted) {
               const finalState = await tab.getAXState({ emit: false, disableDiffing: true });
+              checkCancellation();
               checkState(finalState, task.allowedOrigins ?? defaults.allowedOrigins);
               if (finalState !== freshState) throw new SidebarError('verification_stale', 'Browser state changed during verification');
             }
@@ -453,6 +462,8 @@ export function createSession(tab, defaults = {}) {
       const initialRounds = rounds.length;
       const session = this;
       const token = Symbol('jev-runner');
+      // Cancellation belongs to this runner across all chunks and waits.
+      const runnerController = new AbortController();
       const runningSnapshot = extra => ({ status: 'running', handoff: null,
         sessionMetrics: metrics(), chunks, lastEvent: lastEvent(), ...extra });
       const complete = outcome => {
@@ -460,10 +471,11 @@ export function createSession(tab, defaults = {}) {
         completed = true;
         activeRunner = null;
         activeRunnerToken = null;
+        activeRunnerSignal = null;
         return { ...outcome, chunks };
       };
       const runner = {
-        cancel() { session.cancel(); },
+        cancel() { if (!completed) runnerController.abort(); },
         async wait(waitOptions = {}) {
           if (completed) return { ...finalOutcome, chunks };
           const timeoutMs = waitOptions && typeof waitOptions === 'object' ?
@@ -482,6 +494,7 @@ export function createSession(tab, defaults = {}) {
               throw new SidebarError('contract_error', 'Invalid Jev runner options');
             }
             while (true) {
+              checkCancellation();
               const spentThisWait = performance.now() - waitStarted;
               const remainingSteps = maxTotalSteps - (rounds.length - initialRounds);
               const remainingTotalMs = maxTotalMs - activeMs - spentThisWait;
@@ -505,6 +518,7 @@ export function createSession(tab, defaults = {}) {
                 maxMs: Math.min(task?.maxMs ?? defaults.maxMs ?? 45000,
                   remainingTotalMs, remainingWaitMs - 750) }, { verify, _token: token });
               chunks += 1;
+              if (latest.status !== 'cancelled') checkCancellation();
               if (!['step_limit', 'budget'].includes(latest.handoff)) return complete(latest);
               emptyChunks = metrics().executedActions === before ? emptyChunks + 1 : 0;
               if (emptyChunks >= 3) {
@@ -521,6 +535,7 @@ export function createSession(tab, defaults = {}) {
       };
       activeRunner = runner;
       activeRunnerToken = token;
+      activeRunnerSignal = runnerController.signal;
       return runner;
     },
     async run(task, token) {
@@ -543,6 +558,9 @@ export function createSession(tab, defaults = {}) {
       });
       running = true;
       controller = new AbortController();
+      if (sessionCancelled) controller.abort();
+      const signal = activeRunnerSignal ?
+        AbortSignal.any([controller.signal, activeRunnerSignal]) : controller.signal;
       const started = performance.now();
       const remaining = () => options.maxMs - (performance.now() - started);
       let state = '';
@@ -569,18 +587,18 @@ export function createSession(tab, defaults = {}) {
       };
       try {
         runs += 1;
-        if (cancelled) return finish('cancelled', 'cancelled');
+        if (signal.aborted) return finish('cancelled', 'cancelled');
         await observe();
         if (options.ready && !conditionMatches(state, options.ready)) {
           const result = await waitForState(tab, { ...options.ready, allowedOrigins: options.allowedOrigins,
             timeoutMs: Math.max(1, Math.min(options.effectTimeoutMs, remaining())), pollMs: options.waitPollMs,
-            signal: controller.signal });
+            signal });
           state = result.state;
-          if (cancelled) return finish('cancelled', 'cancelled');
+          if (signal.aborted) return finish('cancelled', 'cancelled');
           if (result.status !== 'matched') return finish('blocked', result.handoff ?? 'form_not_ready');
         }
         for (let step = 0; step < options.maxSteps; step++) {
-          if (cancelled) return finish('cancelled', 'cancelled');
+          if (signal.aborted) return finish('cancelled', 'cancelled');
           if (remaining() <= 0) return finish('budget', 'budget');
           phase = 'candidates';
           const seen = new Set();
@@ -610,7 +628,7 @@ export function createSession(tab, defaults = {}) {
               history: decisionHistory(),
               onRequest: () => { round.requestSubmitted = true; },
               onResponse: () => { round.responseReceived = true; },
-              timeoutMs: Math.max(1, Math.min(options.decisionTimeoutMs, Math.floor(remaining()))), signal: controller.signal });
+              timeoutMs: Math.max(1, Math.min(options.decisionTimeoutMs, Math.floor(remaining()))), signal });
           } catch (error) {
             const reason = errorCode(error, 'decision_error');
             round.error = reason;
@@ -619,7 +637,7 @@ export function createSession(tab, defaults = {}) {
             if (reason === 'transport_error' && retries++ < options.maxDecisionRetries && remaining() >= 1000) {
               await observe(); step -= 1; continue;
             }
-            return finish(cancelled ? 'cancelled' : reason === 'context_limit' ? 'host_required' : 'decision_error', reason,
+            return finish(signal.aborted ? 'cancelled' : reason === 'context_limit' ? 'host_required' : 'decision_error', reason,
               { error: errorText(reason) });
           }
           retries = 0;
@@ -631,7 +649,7 @@ export function createSession(tab, defaults = {}) {
           history.push(record);
           round.decision = record;
           await observe();
-          if (cancelled) return finish('cancelled', 'cancelled');
+          if (signal.aborted) return finish('cancelled', 'cancelled');
           if (remaining() <= 0) { record.reason = 'budget'; return finish('budget', 'budget'); }
           if (state !== before) { record.reason = 'stale_state'; continue; }
           if (decision.choice === 'HOST') return finish('host_required', 'host');
@@ -662,9 +680,9 @@ export function createSession(tab, defaults = {}) {
           if (decision.action.expect) {
             const result = await waitForState(tab, { ...decision.action.expect, allowedOrigins: options.allowedOrigins,
               timeoutMs: Math.max(1, Math.min(options.effectTimeoutMs, remaining())), pollMs: options.waitPollMs,
-              signal: controller.signal });
+              signal });
             state = result.state;
-            if (cancelled) return finish('cancelled', 'cancelled');
+            if (signal.aborted) return finish('cancelled', 'cancelled');
             record.effect = result.status;
             if (result.status !== 'matched') { blockedTargets.add(actionKey(decision.action)); record.reason = result.handoff ?? 'expected_effect_missing'; return finish('blocked', record.reason); }
           }

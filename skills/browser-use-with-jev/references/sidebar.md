@@ -56,9 +56,14 @@ HOST or VERIFY choice, input requiring Codex, uncertainty, blocked actions,
 origin changes, and errors. Check the returned `status`, `handoff`, and safe
 `error` fields before acting. Runtime errors produce structured results rather
 than an uncaught tool exception. Keep the tab and runner bindings across waits.
-To stop, call `session.cancel()`, then wait for the cancelled result. Cancellation
-prevents future actions but cannot undo a dispatched CUA action. A cancelled
-session cannot resume. Do not cache-bust imports except when testing edited code.
+To stop a runner, call `runner.cancel()`, then wait for the cancelled result.
+Cancellation stays with that runner across chunks and waits. If it is paused,
+the next valid `wait()` returns `cancelled` before further browser or model work.
+Cancelling a completed runner does nothing, and a new runner can use the session
+after the cancelled runner has returned its terminal result. Call
+`session.cancel()` to permanently stop the entire session; a cancelled session
+cannot resume. Cancellation cannot undo a dispatched CUA action. Do not
+cache-bust imports except when testing edited code.
 
 If the task has a concrete AX condition that can be checked without visual
 judgment, provide `verify` at startup. The callback receives a fresh AX state

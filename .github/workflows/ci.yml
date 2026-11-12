@@ -23,5 +23,5 @@ jobs:
       - run: uv run ruff check src tests examples scripts skills
       - run: uv run ruff format --check src tests examples scripts skills
       - run: uv run pytest -q
-      - run: node --test tests/sidebar.test.mjs tests/sidebar-worker.test.mjs
+      - run: node --test tests/sidebar.test.mjs tests/sidebar-worker.test.mjs tests/sidebar-autoloop.test.mjs
       - run: uv build
