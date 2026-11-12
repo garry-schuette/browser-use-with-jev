@@ -231,6 +231,178 @@ test('wait timeout pauses the runner; the next wait resumes and rejects competin
   assert.equal(session.metrics().apiRequests, 1);
 });
 
+test('a completed runner cannot cancel the next runner in the same session', { timeout: 5000 }, async () => {
+  let requestStarted, releaseRequest, requestSignal;
+  const requestInFlight = new Promise(resolve => { requestStarted = resolve; });
+  const responseGate = new Promise(resolve => { releaseRequest = resolve; });
+  let requests = 0;
+  mock.method(globalThis, 'fetch', async (_url, options) => {
+    const body = JSON.parse(options.body);
+    if (++requests === 2) {
+      requestSignal = options.signal;
+      requestStarted();
+      await responseGate;
+    }
+    return choiceResponse(body, 'VERIFY');
+  });
+  const tab = { id: 'autoloop-cancel-ownership',
+    async getAXState() { return page('  1 text Expected result ready'); } };
+  const task = { goal: 'Check the expected result', allowedOrigins: ['https://example.com'],
+    policy: {}, controls: [] };
+  const session = createSession(tab, await config());
+  const runnerA = session.start(task, { verify: fresh => ({
+    accepted: true, reason: 'Expected result confirmed', evidence: fresh,
+  }) });
+  const resultA = await runnerA.wait({ timeoutMs: 10000 });
+  assert.equal(resultA.status, 'verified');
+
+  const runnerB = session.start(task);
+  const waitingB = runnerB.wait({ timeoutMs: 10000 });
+  await requestInFlight;
+  try {
+    assert.equal(requestSignal.aborted, false);
+    runnerA.cancel();
+  } finally { releaseRequest(); }
+  const resultB = await waitingB;
+  assert.equal(resultB.status, 'needs_verification');
+  assert.equal(resultB.handoff, 'verify');
+  assert.equal(requestSignal.aborted, false);
+  assert.equal(requests, 2);
+  assert.deepEqual(await runnerA.wait(), resultA);
+  assert.deepEqual(session.metrics().handoffs, { verify: 1 });
+});
+
+test('a runner cancels its own in-flight request without poisoning the session', { timeout: 5000 }, async () => {
+  let requestStarted, requestSignal, releaseRequest;
+  const requestInFlight = new Promise(resolve => { requestStarted = resolve; });
+  let requests = 0;
+  mock.method(globalThis, 'fetch', (_url, options) => {
+    const body = JSON.parse(options.body);
+    if (++requests > 1) return Promise.resolve(choiceResponse(body, 'VERIFY'));
+    requestSignal = options.signal;
+    return new Promise((resolve, reject) => {
+      releaseRequest = () => resolve(choiceResponse(body, 'a0'));
+      requestSignal.addEventListener('abort', () => reject(requestSignal.reason), { once: true });
+      requestStarted();
+    });
+  });
+  const tab = { id: 'autoloop-cancel-request', clicks: [],
+    async getAXState() { return page('  1 button Advance'); },
+    async click(index) { this.clicks.push(index); } };
+  const task = { goal: 'Advance', allowedOrigins: ['https://example.com'],
+    policy: {}, controls: [{ op: 'click', name: 'Advance' }] };
+  const session = createSession(tab, await config());
+  const runnerB = session.start(task);
+  const waitingB = runnerB.wait({ timeoutMs: 10000 });
+  await requestInFlight;
+  try {
+    runnerB.cancel();
+    assert.equal(requestSignal.aborted, true);
+  } finally { releaseRequest(); }
+  const resultB = await waitingB;
+  assert.equal(resultB.status, 'cancelled');
+  assert.equal(resultB.handoff, 'cancelled');
+  assert.deepEqual(tab.clicks, []);
+  assert.deepEqual(await runnerB.wait(), resultB);
+  assert.equal((await session.start(task).wait({ timeoutMs: 10000 })).status, 'needs_verification');
+  assert.equal(requests, 2);
+});
+
+test('cancellation between waits is terminal before any further browser or model work', async () => {
+  // Advance a virtual clock past the checkpoint after one real action chunk.
+  let now = 0;
+  mock.method(performance, 'now', () => now);
+  let requests = 0;
+  mock.method(globalThis, 'fetch', async (_url, options) => {
+    requests++;
+    return choiceResponse(JSON.parse(options.body), requests === 1 ? 'a0' : 'VERIFY');
+  });
+  const tab = { id: 'autoloop-cancel-paused', reads: 0, clicks: 0,
+    async getAXState() { this.reads++; return page(`  1 button Advance\n  2 text Progress ${this.clicks}`); },
+    async click(index) { assert.equal(index, 1); this.clicks++; now = 8500; } };
+  const task = { goal: 'Advance', allowedOrigins: ['https://example.com'],
+    policy: {}, maxSteps: 1, controls: [{ op: 'click', name: 'Advance' }] };
+  const session = createSession(tab, await config());
+  const runnerB = session.start(task);
+  const paused = await runnerB.wait({ timeoutMs: 10000 });
+  assert.equal(paused.status, 'running');
+  assert.equal(paused.chunks, 1);
+  assert.equal(requests, 1);
+  assert.equal(tab.clicks, 1);
+  const readsBeforeCancel = tab.reads;
+  runnerB.cancel();
+  runnerB.cancel();
+  const resultB = await runnerB.wait({ timeoutMs: 1 });
+  assert.equal(resultB.status, 'cancelled');
+  assert.equal(resultB.handoff, 'cancelled');
+  assert.deepEqual(await runnerB.wait(), resultB);
+  assert.equal(tab.reads, readsBeforeCancel);
+  assert.equal(requests, 1);
+  assert.equal(tab.clicks, 1);
+  assert.deepEqual(session.metrics().handoffs, { cancelled: 1 });
+
+  const runnerC = session.start(task);
+  runnerB.cancel();
+  assert.equal((await runnerC.wait({ timeoutMs: 10000 })).status, 'needs_verification');
+  assert.equal(requests, 2);
+});
+
+test('cancellation before the first wait performs no work and session cancellation stays permanent', async () => {
+  const tab = { id: 'autoloop-cancel-before-wait', reads: 0,
+    async getAXState() { this.reads++; throw new Error('Cancelled runner must not observe'); } };
+  mock.method(globalThis, 'fetch', () => { throw new Error('Cancelled runner must not request'); });
+  const task = { goal: 'Check the expected result', allowedOrigins: ['https://example.com'],
+    policy: {}, controls: [] };
+  const session = createSession(tab, await config());
+  const runner = session.start(task);
+  runner.cancel();
+  const result = await runner.wait({ timeoutMs: 1 });
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.handoff, 'cancelled');
+  assert.deepEqual(await runner.wait(), result);
+  assert.equal(tab.reads, 0);
+  assert.equal(session.metrics().runs, 0);
+
+  session.cancel();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const next = await session.start(task).wait({ timeoutMs: 1 });
+    assert.equal(next.status, 'cancelled');
+    assert.equal(next.handoff, 'cancelled');
+  }
+  assert.equal((await session.run(task)).status, 'cancelled');
+  assert.equal(tab.reads, 0);
+  assert.equal(session.metrics().apiRequests, 0);
+});
+
+test('cancellation during verification cannot accept a late verifier result', { timeout: 5000 }, async () => {
+  let verificationStarted, releaseVerification;
+  const atVerification = new Promise(resolve => { verificationStarted = resolve; });
+  const verificationGate = new Promise(resolve => { releaseVerification = resolve; });
+  mock.method(globalThis, 'fetch', async (_url, options) => choiceResponse(JSON.parse(options.body), 'VERIFY'));
+  const tab = { id: 'autoloop-cancel-verification',
+    async getAXState() { return page('  1 text Expected result ready'); } };
+  const task = { goal: 'Check the expected result', allowedOrigins: ['https://example.com'],
+    policy: {}, controls: [] };
+  const session = createSession(tab, await config());
+  const runner = session.start(task, { verify: async fresh => {
+    verificationStarted();
+    await verificationGate;
+    return { accepted: true, reason: 'Expected result confirmed', evidence: fresh };
+  } });
+  const waiting = runner.wait({ timeoutMs: 10000 });
+  await atVerification;
+  try { runner.cancel(); }
+  finally { releaseVerification(); }
+  const result = await waiting;
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.handoff, 'cancelled');
+  assert.equal(session.metrics().verificationAccepted, 0);
+  assert.equal(session.metrics().browserTaskVerified, false);
+  assert.deepEqual(session.metrics().handoffs, { cancelled: 1 });
+  assert.deepEqual(await runner.wait(), result);
+  assert.equal((await session.start(task).wait({ timeoutMs: 10000 })).status, 'needs_verification');
+});
+
 test('ready is checked at startup and not repeated after an authorized action changes the page', async () => {
   const tab = {
     id: 'autoloop-ready', clicks: 0,
